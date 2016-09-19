@@ -57,13 +57,13 @@ class TTI_cg:
                 cache_blocking=None, compiler=None, u_ini=None):
         fw = ForwardOperator(self.model, self.src, self.damp, self.data,
                              time_order=self.t_order, spc_order=self.s_order,
-                             profile=True, save=save, cache_blocking=cache_blocking,
+                             profile=True, save=False, cache_blocking=cache_blocking,
                              dse=dse, compiler=compiler, u_ini=u_ini)
 
         if auto_tuning:
             fw_new = ForwardOperator(self.model, self.src, self.damp, self.data,
                                      time_order=self.t_order, spc_order=self.s_order,
-                                     profile=True, save=save, dse=dse, compiler=compiler)
+                                     profile=True, save=False, dse=dse, compiler=compiler)
 
             at = AutoTuner(fw_new)
             at.auto_tune_blocks(self.s_order + 1, self.s_order * 4 + 2)

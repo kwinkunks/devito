@@ -1,3 +1,4 @@
+import sympy
 from sympy import *
 
 from devito.dimension import x, y, z

@@ -12,11 +12,10 @@ from examples.acoustic.acoustic_example import run as acoustic_run
 from examples.tti.tti_example import run as tti_run
 
 try:
-    from opescibench import Benchmark, Executor, RooflinePlotter
+    from opescibench import Benchmark, Executor
 except:
     Benchmark = None
     Executor = None
-    RooflinePlotter = None
 
 
 if __name__ == "__main__":
