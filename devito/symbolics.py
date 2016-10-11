@@ -102,8 +102,8 @@ class Temporary(Eq):
         reads = kwargs.pop('reads')
         readby = kwargs.pop('readby')
         obj = super(Temporary, cls).__new__(cls, lhs, rhs, **kwargs)
-        obj._reads = reads
-        obj._readby = readby
+        obj._reads = set(reads)
+        obj._readby = set(readby)
         return obj
 
     @property
@@ -114,9 +114,11 @@ class Temporary(Eq):
     def readby(self):
         return self._readby
 
+    @property
     def is_time_invariant(self):
-        pass
+        return t not in self.lhs.atoms() | self.rhs.atoms()
 
+    @property
     def is_alive(self):
         return len(self.readby) > 0
 
@@ -141,8 +143,9 @@ class Rewriter(object):
         if self.mode in ['basic', 'advanced']:
             temporaries, processed = self._cse()
 
-        if self.mode == 'advanced':
-            temporaries = self._temporaries_graph(temporaries)
+        #if self.mode == 'advanced':
+        temporaries = self._temporaries_graph(temporaries)
+        lifted, temporaries = self._process_graph(temporaries)
 
         return temporaries + processed
 
@@ -154,13 +157,51 @@ class Rewriter(object):
         Node = namedtuple('Node', ['rhs', 'reads', 'readby'])
 
         for lhs, rhs in [i.args for i in temporaries]:
-            mapper[lhs] = Node(rhs, [i for i in rhs.atoms() if i in mapper], [])
+            mapper[lhs] = Node(rhs, {i for i in rhs.atoms() if i in mapper}, set())
             for i in mapper[lhs].reads:
                 assert i in mapper, "Illegal Flow"
-                mapper[i].readby.append(lhs)
+                mapper[i].readby.add(lhs)
 
         return [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
                 for lhs, node in mapper.items()]
+
+    def _process_graph(self, temporaries):
+        """
+        Extract time-invariant computation from a temporaries graph
+        """
+        dtemporaries = OrderedDict([(i.lhs, i) for i in temporaries])
+
+        time_invariant_exprs = []
+        time_varying_syms = [i.lhs.base for i in self.expr]
+
+        for temporary in temporaries:
+            lhs = temporary.lhs
+            node = dtemporaries[lhs]
+
+            # Create time-invariant computation
+            if not node.is_time_invariant:
+                handle = expand_mul(node.rhs)
+
+                indexed = handle.find(lambda j: isinstance(j, Indexed))
+                collectable = [j for j in indexed if j.base in time_varying_syms]
+                handle = collect(handle, collectable)
+
+                dtemporaries[lhs] = Temporary(lhs, handle.xreplace({}),
+                                              reads=node.reads, readby=node.readby)
+
+                from IPython import embed; embed()
+            else:
+                dtemporaries.pop(lhs)
+
+            # Substitute into ahead temporaries
+            for j in node.readby:
+                handle = dtemporaries[j]
+                reads = (handle.reads - {lhs}) | node.reads
+                dtemporaries[j] = Temporary(handle.lhs,
+                                            handle.rhs.xreplace({lhs: node.rhs}),
+                                            reads=reads, readby=handle.readby)
+
+        return [], temporaries
 
     def _cse(self):
         """
@@ -284,3 +325,31 @@ def free_terms(expr):
             found += free_terms(term)
 
     return found
+
+
+def longest_time_invariant(expr):
+    """
+    Retrieve the set of longest time-invariant sub-expressions in expr.
+
+    Examples
+    ========
+
+    (a+b)*c[t] + s*d[t] + v*(e[t] + d + r) --> {(a+b), (d+r)}
+    (a*b[t] + c*d[t])*v[t] --> {}
+    """
+
+    matches = set()
+
+    for e in postorder_traversal(expr):
+        if e.is_Atom:
+            matches |= {e}
+        elif isinstance(e, Indexed) and t not in e.atoms():
+            matches |= {e}
+        elif all(a in matches for a in e.args):
+            # Found a larger time-invariant sub-expression
+            matches = (matches - set(e.args)) | {e}
+
+    # Filter off everything which is not at least a binary expression
+    matches = [e for e in matches if not (e.is_Atom or isinstance(e, Indexed))]
+
+    return matches
