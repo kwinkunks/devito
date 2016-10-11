@@ -82,90 +82,130 @@ def dse_indexify(expr):
     return expr.xreplace(replacements)
 
 
-def dse_cse(expr):
+def dse_rewrite(expr, mode='basic'):
     """
-    Perform common subexpression elimination on sympy expressions.
-
-    :param expr: sympy equation or list of equations on which CSE is performed.
-
-    :return: A list of the resulting equations after performing CSE
+    Transform expressions to create time-invariant computation.
     """
-    expr = expr if isinstance(expr, list) else [expr]
+    assert mode in ['no-op', 'basic', 'advanced']
+    return Rewriter(expr, mode).run()
 
-    temps, stencils = cse(expr, numbered_symbols("temp"))
 
-    # Restores the LHS
-    for i in range(len(expr)):
-        stencils[i] = Eq(expr[i].lhs, stencils[i].rhs)
+class Temporary(object):
 
-    to_revert = {}
-    to_keep = []
+    """
+    Metadata for a temporary variable produced by Common Subexpression Elimination.
+    """
 
-    # Restores IndexedBases if they are collected by CSE and
-    # reverts changes to simple index operations (eg: t - 1)
-    for temp, value in temps:
-        if isinstance(value, IndexedBase):
-            to_revert[temp] = value
-        elif isinstance(value, Indexed):
-            to_revert[temp] = value
-        elif isinstance(value, Add) and not \
-                set([t, x, y, z]).isdisjoint(set(value.args)):
-            to_revert[temp] = value
-        else:
-            to_keep.append((temp, value))
+    def __init__(self, node, reads=None, readby=None):
+        self.node = node
+        self.reads = reads or []
+        self.readby = readby or []
 
-    # Restores the IndexedBases and the Indexes in the assignments to revert
-    for temp, value in to_revert.items():
-        s_dict = {}
-        for arg in preorder_traversal(value):
-            if isinstance(arg, Indexed):
-                new_indices = []
-                for index in arg.indices:
-                    if index in to_revert:
-                        new_indices.append(to_revert[index])
-                    else:
-                        new_indices.append(index)
-                if arg.base.label in to_revert:
-                    s_dict[arg] = Indexed(to_revert[value.base.label], *new_indices)
-        to_revert[temp] = value.xreplace(s_dict)
+    def is_time_invariant(self):
+        pass
 
-    subs_dict = {}
+    def is_alive(self):
+        return len(self.readby) > 0
 
-    # Builds a dictionary of the replacements
-    for expr in stencils + [assign for temp, assign in to_keep]:
-        for arg in preorder_traversal(expr):
-            if isinstance(arg, Indexed):
-                new_indices = []
-                for index in arg.indices:
-                    if index in to_revert:
-                        new_indices.append(to_revert[index])
-                    else:
-                        new_indices.append(index)
-                if arg.base.label in to_revert:
-                    subs_dict[arg] = Indexed(to_revert[arg.base.label], *new_indices)
-                elif tuple(new_indices) != arg.indices:
-                    subs_dict[arg] = Indexed(arg.base, *new_indices)
-            if arg in to_revert:
-                subs_dict[arg] = to_revert[arg]
 
-    stencils = [stencil.xreplace(subs_dict) for stencil in stencils]
+class Rewriter(object):
 
-    to_keep = [Eq(temp[0], temp[1].xreplace(subs_dict)) for temp in to_keep]
+    """
+    Transform expressions to create time-invariant computation.
+    """
 
-    # If the RHS of a temporary variable is the LHS of a stencil,
-    # update the value of the temporary variable after the stencil
+    def __init__(self, expr, mode='basic'):
+        self.expr = expr
+        self.mode = mode
 
-    new_stencils = []
+    def run(self):
+        processed = self.expr
 
-    for stencil in stencils:
-        new_stencils.append(stencil)
+        if self.mode in ['basic', 'advanced']:
+            processed = self._cse()
 
-        for temp in to_keep:
-            if stencil.lhs in preorder_traversal(temp.rhs):
-                new_stencils.append(temp)
-                break
+        return processed
 
-    return to_keep + new_stencils
+    def _cse(self):
+        """
+        Perform common subexpression elimination.
+        """
+        expr = self.expr if isinstance(self.expr, list) else [self.expr]
+
+        temps, stencils = cse(expr, numbered_symbols("temp"))
+
+        # Restores the LHS
+        for i in range(len(expr)):
+            stencils[i] = Eq(expr[i].lhs, stencils[i].rhs)
+
+        to_revert = {}
+        to_keep = []
+
+        # Restores IndexedBases if they are collected by CSE and
+        # reverts changes to simple index operations (eg: t - 1)
+        for temp, value in temps:
+            if isinstance(value, IndexedBase):
+                to_revert[temp] = value
+            elif isinstance(value, Indexed):
+                to_revert[temp] = value
+            elif isinstance(value, Add) and not \
+                    set([t, x, y, z]).isdisjoint(set(value.args)):
+                to_revert[temp] = value
+            else:
+                to_keep.append((temp, value))
+
+        # Restores the IndexedBases and the Indexes in the assignments to revert
+        for temp, value in to_revert.items():
+            s_dict = {}
+            for arg in preorder_traversal(value):
+                if isinstance(arg, Indexed):
+                    new_indices = []
+                    for index in arg.indices:
+                        if index in to_revert:
+                            new_indices.append(to_revert[index])
+                        else:
+                            new_indices.append(index)
+                    if arg.base.label in to_revert:
+                        s_dict[arg] = Indexed(to_revert[value.base.label], *new_indices)
+            to_revert[temp] = value.xreplace(s_dict)
+
+        subs_dict = {}
+
+        # Builds a dictionary of the replacements
+        for expr in stencils + [assign for temp, assign in to_keep]:
+            for arg in preorder_traversal(expr):
+                if isinstance(arg, Indexed):
+                    new_indices = []
+                    for index in arg.indices:
+                        if index in to_revert:
+                            new_indices.append(to_revert[index])
+                        else:
+                            new_indices.append(index)
+                    if arg.base.label in to_revert:
+                        subs_dict[arg] = Indexed(to_revert[arg.base.label], *new_indices)
+                    elif tuple(new_indices) != arg.indices:
+                        subs_dict[arg] = Indexed(arg.base, *new_indices)
+                if arg in to_revert:
+                    subs_dict[arg] = to_revert[arg]
+
+        stencils = [stencil.xreplace(subs_dict) for stencil in stencils]
+
+        to_keep = [Eq(temp[0], temp[1].xreplace(subs_dict)) for temp in to_keep]
+
+        # If the RHS of a temporary variable is the LHS of a stencil,
+        # update the value of the temporary variable after the stencil
+
+        new_stencils = []
+
+        for stencil in stencils:
+            new_stencils.append(stencil)
+
+            for temp in to_keep:
+                if stencil.lhs in preorder_traversal(temp.rhs):
+                    new_stencils.append(temp)
+                    break
+
+        return to_keep + new_stencils
 
 
 # Creation

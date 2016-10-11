@@ -11,7 +11,7 @@ from examples.source_type import SourceLike
 class ForwardOperator(Operator):
     def __init__(self, model, src, damp, data, time_order=2, spc_order=4, save=False,
                  trigonometry='normal', **kwargs):
-        trigonometry = 'Bhaskara'
+        trigonometry = 'original'
         nrec, nt = data.shape
 
         dt = model.get_critical_dt()
