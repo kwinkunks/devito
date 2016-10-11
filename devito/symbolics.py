@@ -7,6 +7,8 @@ classes of functions:
 All exposed functions are prefixed with 'dse' (devito symbolic engine)
 """
 
+from collections import namedtuple, OrderedDict
+
 import numpy as np
 
 from sympy import *
@@ -15,7 +17,7 @@ from devito.dimension import t, x, y, z
 from devito.interfaces import SymbolicData
 
 __all__ = ['dse_dimensions', 'dse_symbols', 'dse_dtype', 'dse_indexify',
-           'dse_cse', 'dse_tolambda']
+           'dse_rewrite', 'dse_tolambda']
 
 
 # Inspection
@@ -90,22 +92,37 @@ def dse_rewrite(expr, mode='basic'):
     return Rewriter(expr, mode).run()
 
 
-class Temporary(object):
+class Temporary(Eq):
 
     """
-    Metadata for a temporary variable produced by Common Subexpression Elimination.
+    A special sympy.Eq which can keep track of other sympy.Eq depending on self.
     """
 
-    def __init__(self, node, reads=None, readby=None):
-        self.node = node
-        self.reads = reads or []
-        self.readby = readby or []
+    def __new__(cls, lhs, rhs, **kwargs):
+        reads = kwargs.pop('reads')
+        readby = kwargs.pop('readby')
+        obj = super(Temporary, cls).__new__(cls, lhs, rhs, **kwargs)
+        obj._reads = reads
+        obj._readby = readby
+        return obj
+
+    @property
+    def reads(self):
+        return self._reads
+
+    @property
+    def readby(self):
+        return self._readby
 
     def is_time_invariant(self):
         pass
 
     def is_alive(self):
         return len(self.readby) > 0
+
+    def __repr__(self):
+        return "DSE(%s, reads=%s, readby=%s)" % (super(Temporary, self).__repr__(),
+                                                 str(self.reads), str(self.readby))
 
 
 class Rewriter(object):
@@ -122,9 +139,28 @@ class Rewriter(object):
         processed = self.expr
 
         if self.mode in ['basic', 'advanced']:
-            processed = self._cse()
+            temporaries, processed = self._cse()
 
-        return processed
+        if self.mode == 'advanced':
+            temporaries = self._temporaries_graph(temporaries)
+
+        return temporaries + processed
+
+    def _temporaries_graph(self, temporaries):
+        """
+        Create a dependency graph given a list of sympy.Eq.
+        """
+        mapper = OrderedDict()
+        Node = namedtuple('Node', ['rhs', 'reads', 'readby'])
+
+        for lhs, rhs in [i.args for i in temporaries]:
+            mapper[lhs] = Node(rhs, [i for i in rhs.atoms() if i in mapper], [])
+            for i in mapper[lhs].reads:
+                assert i in mapper, "Illegal Flow"
+                mapper[i].readby.append(lhs)
+
+        return [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
+                for lhs, node in mapper.items()]
 
     def _cse(self):
         """
@@ -205,7 +241,7 @@ class Rewriter(object):
                     new_stencils.append(temp)
                     break
 
-        return to_keep + new_stencils
+        return to_keep, new_stencils
 
 
 # Creation
