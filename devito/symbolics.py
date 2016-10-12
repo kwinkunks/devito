@@ -19,6 +19,8 @@ from devito.interfaces import SymbolicData
 __all__ = ['dse_dimensions', 'dse_symbols', 'dse_dtype', 'dse_indexify',
            'dse_rewrite', 'dse_tolambda']
 
+_temp_prefix = 'temp'
+
 
 # Inspection
 
@@ -189,6 +191,7 @@ class Rewriter(object):
                 dtemporaries[lhs] = Temporary(lhs, handle.xreplace({}),
                                               reads=node.reads, readby=node.readby)
 
+                reconstructed, mapper = self._extract_time_invariants(handle)
                 from IPython import embed; embed()
             else:
                 dtemporaries.pop(lhs)
@@ -219,37 +222,47 @@ class Rewriter(object):
             --> ((a*b[t] + c*d[t])*v[t], {})
         """
 
-        def search(expr, root, matches):
+        def run(expr, root, mapper):
             # Return semantic: (reconstructed expr, time invariant flag)
-            print expr, matches
+            print expr, type(expr), mapper
             if expr.is_Atom:
-                return (expr.func(*expr.args), True)
+                return (expr.func(*expr.atoms()), True)
             elif isinstance(expr, Indexed):
                 return (expr.func(*expr.args), t not in expr.atoms())
             else:
-                children = [search(a, root, matches) for a in expr.args]
-                is_time_invariant = all(i[1] for i in children)
-                if is_time_invariant:
+                children = [run(a, root, mapper) for a in expr.args]
+                invariants = [a for a, flag in children if flag]
+                varying = [a for a, _ in children if a not in invariants]
+                if not invariants:
+                    # Nothing is time-invariant
+                    return (expr.func(*expr.args), False)
+                if len(invariants) == len(children):
+                    # Everything is time-invariant
                     if expr == root:
-                        # Special case: everything is time-invariant
-                        pass
+                        # Root is a special case
+                        base = '%s_ti_%d' % (_temp_prefix, len(mapper))
+                        temporary = Indexed(base, *expression_shape(expr))
+                        mapper[temporary] = expr.func(*expr.args)
+                        return (temporary, True)
                     else:
-                        # Found a larger time-invariant sub-expression, go
-                        # look for more
+                        # Go look for longer expressions first
                         return (expr.func(*expr.args), True)
                 else:
-                    # Some children are time-invariant, but expr depends on time
-                    invariants = [a for a, flag in zip(expr.args, children) if flag]
-                    varying = [a for a in expr.args if a not in invariants]
-                    matches[]
-            return (expr.func(*expr.args), time_invariant)
+                    # Some children are time-invariant, but expr is time-dependent
+                    if len(invariants) == 1 and \
+                            isinstance(invariants[0], (Atom, Indexed)):
+                        return (expr.func(*expr.args), False)
+                    else:
+                        base = '%s_ti_%d' % (_temp_prefix, len(mapper))
+                        shapes = [expression_shape(a) for a in invariants]
+                        shapes = [i for i in shapes if i]
+                        assert all(shapes[0] == i for i in shapes)
+                        temporary = Indexed(base, *shapes[0])
+                        mapper[temporary] = expr.func(*invariants)
+                        return (expr.func(*(varying + [temporary])), False)
 
         mapper = OrderedDict()
-        search(expr, expr, mapper)
-        # Filter off everything which is not at least a binary expression
-        matches = [e for e in matches if not (e.is_Atom or isinstance(e, Indexed))]
-
-        return matches
+        return run(expr, expr, mapper)[0], mapper
 
     def _cse(self):
         """
@@ -373,3 +386,13 @@ def free_terms(expr):
             found += free_terms(term)
 
     return found
+
+
+def expression_shape(expr):
+    indexed = set([e for e in preorder_traversal(expr) if isinstance(e, Indexed)])
+    if not indexed:
+        return ()
+    indexed = sorted(indexed, key=lambda s: len(s.indices), reverse=True)
+    indices = [flatten(j.free_symbols for j in i.indices) for i in indexed]
+    assert all(set(indices[0]).issuperset(set(i)) for i in indices)
+    return tuple(indices[0])
