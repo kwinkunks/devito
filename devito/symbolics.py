@@ -203,6 +203,54 @@ class Rewriter(object):
 
         return [], temporaries
 
+    def _extract_time_invariants(self, expr):
+        """
+        Create a new expr' given expr where the longest time-invariant
+        sub-expressions are replaced by temporaries. A mapper from the
+        introduced temporaries to the corresponding time-invariant
+        sub-expressions is also returned.
+
+        Examples
+        ========
+
+        (a+b)*c[t] + s*d[t] + v*(d + e[t] + r) 
+            --> (t1*c[t] + s*d[t] + v*(e[t] + t2), {t1: (a+b), t2: (d+r)})
+        (a*b[t] + c*d[t])*v[t]
+            --> ((a*b[t] + c*d[t])*v[t], {})
+        """
+
+        def search(expr, root, matches):
+            # Return semantic: (reconstructed expr, time invariant flag)
+            print expr, matches
+            if expr.is_Atom:
+                return (expr.func(*expr.args), True)
+            elif isinstance(expr, Indexed):
+                return (expr.func(*expr.args), t not in expr.atoms())
+            else:
+                children = [search(a, root, matches) for a in expr.args]
+                is_time_invariant = all(i[1] for i in children)
+                if is_time_invariant:
+                    if expr == root:
+                        # Special case: everything is time-invariant
+                        pass
+                    else:
+                        # Found a larger time-invariant sub-expression, go
+                        # look for more
+                        return (expr.func(*expr.args), True)
+                else:
+                    # Some children are time-invariant, but expr depends on time
+                    invariants = [a for a, flag in zip(expr.args, children) if flag]
+                    varying = [a for a in expr.args if a not in invariants]
+                    matches[]
+            return (expr.func(*expr.args), time_invariant)
+
+        mapper = OrderedDict()
+        search(expr, expr, mapper)
+        # Filter off everything which is not at least a binary expression
+        matches = [e for e in matches if not (e.is_Atom or isinstance(e, Indexed))]
+
+        return matches
+
     def _cse(self):
         """
         Perform common subexpression elimination.
@@ -325,31 +373,3 @@ def free_terms(expr):
             found += free_terms(term)
 
     return found
-
-
-def longest_time_invariant(expr):
-    """
-    Retrieve the set of longest time-invariant sub-expressions in expr.
-
-    Examples
-    ========
-
-    (a+b)*c[t] + s*d[t] + v*(e[t] + d + r) --> {(a+b), (d+r)}
-    (a*b[t] + c*d[t])*v[t] --> {}
-    """
-
-    matches = set()
-
-    for e in postorder_traversal(expr):
-        if e.is_Atom:
-            matches |= {e}
-        elif isinstance(e, Indexed) and t not in e.atoms():
-            matches |= {e}
-        elif all(a in matches for a in e.args):
-            # Found a larger time-invariant sub-expression
-            matches = (matches - set(e.args)) | {e}
-
-    # Filter off everything which is not at least a binary expression
-    matches = [e for e in matches if not (e.is_Atom or isinstance(e, Indexed))]
-
-    return matches
