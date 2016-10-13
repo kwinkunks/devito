@@ -118,6 +118,8 @@ class Temporary(Eq):
 
     @property
     def is_time_invariant(self):
+        # FIXME: temp1 = temp33*temp34 would be considered time-invariant, but
+        # temp33 or temp34 could actually be time-dependent
         return t not in self.lhs.atoms() | self.rhs.atoms()
 
     @property
@@ -135,7 +137,8 @@ class Rewriter(object):
     Transform expressions to create time-invariant computation.
     """
 
-    # TODO add rewrite thresholds to avoid pushing too many temporaries
+    # Do not rewrite expressions accessing more than THRESHOLD temporaries
+    THRESHOLD = 20
 
     def __init__(self, expr, mode='basic'):
         self.expr = expr
@@ -205,6 +208,7 @@ class Rewriter(object):
             processing[lhs] = node
 
             # Substitute into subsequent temporaries
+            # TODO : extend if to take THRESHOLD into account
             if not node.is_terminal:
                 for j in node.readby:
                     handle = processing.get(j, graph[j])
@@ -283,6 +287,7 @@ class Rewriter(object):
         """
         Eliminate duplicate time invariants and collect common factors.
         """
+        # TODO
         pass
 
     def _cse(self):
