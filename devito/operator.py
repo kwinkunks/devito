@@ -137,8 +137,6 @@ class Operator(object):
         for param in self.signature:
             self.propagator.add_devito_param(param)
             self.symbol_to_data[param.name] = param
-        self.propagator.stencils = self.stencils
-        self.propagator.factorized = factorized
         for name, val in factorized.items():
             if forward:
                 self.propagator.factorized[name] = \

@@ -20,7 +20,7 @@ from devito.function_manager import FunctionDescriptor, FunctionManager
 from devito.iteration import Iteration
 from devito.logger import info
 from devito.profiler import Profiler
-from devito.symbolics import dse_dtype
+from devito.symbolics import dse_dtype, Temporary
 from devito.tools import flatten
 
 
@@ -62,7 +62,6 @@ class Propagator(object):
     def __init__(self, name, nt, shape, stencils, factorized=None, spc_border=0,
                  time_order=0, time_dim=None, space_dims=None, dtype=np.float32,
                  forward=True, compiler=None, profile=False, cache_blocking=None):
-        self.stencils = stencils
         self.dtype = dtype
         self.factorized = factorized or {}
         self.time_order = time_order
@@ -113,6 +112,11 @@ class Propagator(object):
         self.profile = profile
         # Profiler needs to know whether openmp is set
         self.profiler = Profiler(self.compiler.openmp, self.dtype)
+
+        # Separate hoistable code from time-dependent stencils
+        self.time_invariants = [i for i in stencils if isinstance(i, Temporary)
+                                and i.is_time_invariant]
+        self.stencils = [i for i in stencils if i not in self.time_invariants]
 
         # Cache blocking and block sizes
         self.cache_blocking = cache_blocking
@@ -529,6 +533,21 @@ class Propagator(object):
 
         loop_body = [cgen.Block(omp_for + loop_body)]
 
+        # Time-invariant computation
+        ctype = cgen.dtype_to_ctype(self.dtype)
+        declaration = "%(type)s (*%(name)s)%(dsize)s;"
+        funcall = "posix_memalign(&%(name)s, 64, sizeof(%(type)s%(size)s));"
+        template = "%s %s" % (declaration, funcall)
+        template = template % {"type": ctype, "name": "%(name)s",
+                               "dsize": "".join("[%d]" % j for j in self.shape[:-1]),
+                               "size": "".join("[%d]" % j for j in self.shape)}
+        declarations = [cgen.Line(template % {'name': i.lhs.base})
+                        for i in self.time_invariants]
+        time_invariants = [self.convert_equality_to_cgen(i)
+                           for i in self.time_invariants]
+        time_invariants = self.generate_space_loops(cgen.Block(time_invariants))
+        time_invariants = [cgen.Block(declarations + time_invariants)]
+
         # Statements to be inserted into the time loop before the spatial loop
         pre_stencils = [self.time_substitutions(x)
                         for x in self.time_loop_stencils_b]
@@ -542,12 +561,16 @@ class Propagator(object):
                          for x in self.time_loop_stencils_a]
 
         if self.profile:
+            time_invariants = self.profiler.add_profiling(time_invariants,
+                                                          TIME_INVARIANTS.name)
             pre_stencils = list(flatten([self.profiler.add_profiling([s], "%s%d" %
                                          (PRE_STENCILS.name, i)) for i, s in
                                          enumerate(pre_stencils)]))
             post_stencils = list(flatten([self.profiler.add_profiling([s], "%s%d" %
                                           (POST_STENCILS.name, i)) for i, s in
                                           enumerate(post_stencils)]))
+            loop_body = self.profiler.add_profiling(loop_body, LOOP_BODY.name,
+                                                    omp_flag=omp_master)
 
         initial_block = time_stepping + pre_stencils
 
@@ -558,10 +581,6 @@ class Propagator(object):
 
         if end_block:
             end_block = omp_single + [cgen.Block(end_block)]
-
-        if self.profile:
-            loop_body = self.profiler.add_profiling(loop_body, LOOP_BODY.name,
-                                                    omp_flag=omp_master)
 
         loop_body = cgen.Block(initial_block + loop_body + end_block)
 
@@ -575,7 +594,7 @@ class Propagator(object):
         # Code to declare the time stepping variables (outside the time loop)
         def_time_step = [cgen.Value("int", t_var_def.name)
                          for t_var_def in self.time_steppers]
-        body = def_time_step + omp_parallel + [loop_body]
+        body = time_invariants + def_time_step + omp_parallel + [loop_body]
 
         return cgen.Block(body)
 
@@ -872,17 +891,8 @@ class Propagator(object):
 
         for arg in postorder_traversal(sympy_expr):
             if isinstance(arg, Indexed):
-                array_term = arg
-
-                if not str(array_term.base.label) in self.save_vars:
-                    raise ValueError(
-                        "Invalid variable '%s' in sympy expression."
-                        " Did you add it to the operator's params?"
-                        % str(array_term.base.label)
-                    )
-
-                if not self.save_vars[str(array_term.base.label)]:
-                    subs_dict[arg] = array_term.xreplace(self.t_replace)
+                if not self.save_vars.get(str(arg.base.label), True):
+                    subs_dict[arg] = arg.xreplace(self.t_replace)
 
         return sympy_expr.xreplace(subs_dict)
 
@@ -895,6 +905,7 @@ class Section(object):
         self.name = name
 
 
+TIME_INVARIANTS = Section('time_invariants')
 PRE_STENCILS = Section('pre_stencils')
 LOOP_BODY = Section('loop_body')
 POST_STENCILS = Section('post_stencils')
