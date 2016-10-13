@@ -119,7 +119,7 @@ class Operator(object):
 
         # Applies CSE
         if cse:
-            self.stencils = dse_rewrite(self.stencils, mode='basic')
+            self.stencils = dse_rewrite(self.stencils, mode='advanced')
 
         self.propagator = Propagator(self.getName(), nt, shape, self.stencils,
                                      factorized=factorized, dtype=dtype,

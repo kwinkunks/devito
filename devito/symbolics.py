@@ -101,8 +101,8 @@ class Temporary(Eq):
     """
 
     def __new__(cls, lhs, rhs, **kwargs):
-        reads = kwargs.pop('reads')
-        readby = kwargs.pop('readby')
+        reads = kwargs.pop('reads', [])
+        readby = kwargs.pop('readby', [])
         obj = super(Temporary, cls).__new__(cls, lhs, rhs, **kwargs)
         obj._reads = set(reads)
         obj._readby = set(readby)
@@ -121,8 +121,8 @@ class Temporary(Eq):
         return t not in self.lhs.atoms() | self.rhs.atoms()
 
     @property
-    def is_alive(self):
-        return len(self.readby) > 0
+    def is_terminal(self):
+        return len(self.readby) == 0
 
     def __repr__(self):
         return "DSE(%s, reads=%s, readby=%s)" % (super(Temporary, self).__repr__(),
@@ -135,6 +135,8 @@ class Rewriter(object):
     Transform expressions to create time-invariant computation.
     """
 
+    # TODO add rewrite thresholds to avoid pushing too many temporaries
+
     def __init__(self, expr, mode='basic'):
         self.expr = expr
         self.mode = mode
@@ -143,13 +145,14 @@ class Rewriter(object):
         processed = self.expr
 
         if self.mode in ['basic', 'advanced']:
-            temporaries, processed = self._cse()
+            time_invariants, processed = [], self._cse()
 
-        #if self.mode == 'advanced':
-        temporaries = self._temporaries_graph(temporaries)
-        lifted, temporaries = self._process_graph(temporaries)
+        if self.mode == 'advanced':
+            graph = self._temporaries_graph(processed)
+            time_invariants, processed = self._process_graph(graph)
+            self._optimize_time_invariants(time_invariants, processed)
 
-        return temporaries + processed
+        return time_invariants + processed
 
     def _temporaries_graph(self, temporaries):
         """
@@ -167,46 +170,57 @@ class Rewriter(object):
         return [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
                 for lhs, node in mapper.items()]
 
-    def _process_graph(self, temporaries):
+    def _process_graph(self, graph):
         """
-        Extract time-invariant computation from a temporaries graph
+        Extract time-invariant computation from a temporaries graph.
         """
-        dtemporaries = OrderedDict([(i.lhs, i) for i in temporaries])
+        graph = OrderedDict([(i.lhs, i) for i in graph])
+        processing = OrderedDict()
 
-        time_invariant_exprs = []
+        time_invariants = OrderedDict()
         time_varying_syms = [i.lhs.base for i in self.expr]
 
-        for temporary in temporaries:
-            lhs = temporary.lhs
-            node = dtemporaries[lhs]
+        for lhs, node in graph.items():
+            # Be sure we work on an up-to-date version of node
+            node = processing.get(lhs, node)
 
             # Create time-invariant computation
             if not node.is_time_invariant:
                 handle = expand_mul(node.rhs)
 
-                indexed = handle.find(lambda j: isinstance(j, Indexed))
-                collectable = [j for j in indexed if j.base in time_varying_syms]
+                indexed = handle.find(lambda i: isinstance(i, Indexed))
+                collectable = [i for i in indexed if i.base in time_varying_syms]
                 handle = collect(handle, collectable)
 
-                dtemporaries[lhs] = Temporary(lhs, handle.xreplace({}),
-                                              reads=node.reads, readby=node.readby)
+                start = len(time_invariants)
+                reconstructed, mapper = self._create_time_invariants(handle, start)
 
-                reconstructed, mapper = self._extract_time_invariants(handle)
-                from IPython import embed; embed()
-            else:
-                dtemporaries.pop(lhs)
+                node = Temporary(lhs, reconstructed,
+                                 reads=node.reads, readby=node.readby)
 
-            # Substitute into ahead temporaries
-            for j in node.readby:
-                handle = dtemporaries[j]
-                reads = (handle.reads - {lhs}) | node.reads
-                dtemporaries[j] = Temporary(handle.lhs,
-                                            handle.rhs.xreplace({lhs: node.rhs}),
-                                            reads=reads, readby=handle.readby)
+                for temp, value in mapper.items():
+                    reads = {i for i in value.find(Indexed) if i in time_invariants}
+                    time_invariants[temp] = Temporary(temp, value,
+                                                      reads=reads, readby=[lhs])
+            processing[lhs] = node
 
-        return [], temporaries
+            # Substitute into subsequent temporaries
+            if not node.is_terminal:
+                for j in node.readby:
+                    handle = processing.get(j, graph[j])
+                    reads = (handle.reads - {lhs}) | node.reads
+                    processing[j] = Temporary(handle.lhs,
+                                              handle.rhs.xreplace({lhs: node.rhs}),
+                                              reads=reads, readby=handle.readby)
+                processing.pop(lhs, None)
 
-    def _extract_time_invariants(self, expr):
+        # Reorder based on original position
+        processing = sorted(processing.values(),
+                            key=lambda n: graph.keys().index(n.lhs))
+
+        return time_invariants.values(), processing
+
+    def _create_time_invariants(self, expr, start=0):
         """
         Create a new expr' given expr where the longest time-invariant
         sub-expressions are replaced by temporaries. A mapper from the
@@ -216,7 +230,7 @@ class Rewriter(object):
         Examples
         ========
 
-        (a+b)*c[t] + s*d[t] + v*(d + e[t] + r) 
+        (a+b)*c[t] + s*d[t] + v*(d + e[t] + r)
             --> (t1*c[t] + s*d[t] + v*(e[t] + t2), {t1: (a+b), t2: (d+r)})
         (a*b[t] + c*d[t])*v[t]
             --> ((a*b[t] + c*d[t])*v[t], {})
@@ -224,8 +238,9 @@ class Rewriter(object):
 
         def run(expr, root, mapper):
             # Return semantic: (reconstructed expr, time invariant flag)
-            print expr, type(expr), mapper
-            if expr.is_Atom:
+            if expr in [S.Zero, S.One, S.NegativeOne, S.Half]:
+                return (expr.func(), True)
+            elif expr.is_Atom:
                 return (expr.func(*expr.atoms()), True)
             elif isinstance(expr, Indexed):
                 return (expr.func(*expr.args), t not in expr.atoms())
@@ -235,25 +250,25 @@ class Rewriter(object):
                 varying = [a for a, _ in children if a not in invariants]
                 if not invariants:
                     # Nothing is time-invariant
-                    return (expr.func(*expr.args), False)
+                    return (expr.func(*varying), False)
                 if len(invariants) == len(children):
                     # Everything is time-invariant
                     if expr == root:
                         # Root is a special case
-                        base = '%s_ti_%d' % (_temp_prefix, len(mapper))
+                        base = '%s_ti_%d' % (_temp_prefix, len(mapper)+start)
                         temporary = Indexed(base, *expression_shape(expr))
                         mapper[temporary] = expr.func(*expr.args)
                         return (temporary, True)
                     else:
                         # Go look for longer expressions first
-                        return (expr.func(*expr.args), True)
+                        return (expr.func(*invariants), True)
                 else:
                     # Some children are time-invariant, but expr is time-dependent
                     if len(invariants) == 1 and \
                             isinstance(invariants[0], (Atom, Indexed)):
-                        return (expr.func(*expr.args), False)
+                        return (expr.func(*(invariants + varying)), False)
                     else:
-                        base = '%s_ti_%d' % (_temp_prefix, len(mapper))
+                        base = '%s_ti_%d' % (_temp_prefix, len(mapper)+start)
                         shapes = [expression_shape(a) for a in invariants]
                         shapes = [i for i in shapes if i]
                         assert all(shapes[0] == i for i in shapes)
@@ -263,6 +278,12 @@ class Rewriter(object):
 
         mapper = OrderedDict()
         return run(expr, expr, mapper)[0], mapper
+
+    def _optimize_time_invariants(self, time_invariants, processed):
+        """
+        Eliminate duplicate time invariants and collect common factors.
+        """
+        pass
 
     def _cse(self):
         """
@@ -343,7 +364,7 @@ class Rewriter(object):
                     new_stencils.append(temp)
                     break
 
-        return to_keep, new_stencils
+        return to_keep + new_stencils
 
 
 # Creation
