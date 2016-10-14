@@ -103,9 +103,11 @@ class Temporary(Eq):
     def __new__(cls, lhs, rhs, **kwargs):
         reads = kwargs.pop('reads', [])
         readby = kwargs.pop('readby', [])
+        time_invariant = kwargs.pop('time_invariant', False)
         obj = super(Temporary, cls).__new__(cls, lhs, rhs, **kwargs)
         obj._reads = set(reads)
         obj._readby = set(readby)
+        obj._is_time_invariant = time_invariant
         return obj
 
     @property
@@ -118,9 +120,7 @@ class Temporary(Eq):
 
     @property
     def is_time_invariant(self):
-        # FIXME: temp1 = temp33*temp34 would be considered time-invariant, but
-        # temp33 or temp34 could actually be time-dependent
-        return t not in self.lhs.atoms() | self.rhs.atoms()
+        return self._is_time_invariant
 
     @property
     def is_terminal(self):
@@ -188,7 +188,7 @@ class Rewriter(object):
             node = processing.get(lhs, node)
 
             # Create time-invariant computation
-            if not node.is_time_invariant:
+            if not is_time_invariant(node):
                 handle = expand_mul(node.rhs)
 
                 indexed = handle.find(lambda i: isinstance(i, Indexed))
@@ -204,7 +204,8 @@ class Rewriter(object):
                 for temp, value in mapper.items():
                     reads = {i for i in value.find(Indexed) if i in time_invariants}
                     time_invariants[temp] = Temporary(temp, value,
-                                                      reads=reads, readby=[lhs])
+                                                      reads=reads, readby=[lhs],
+                                                      time_invariant=True)
             processing[lhs] = node
 
             # Substitute into subsequent temporaries
@@ -412,6 +413,34 @@ def free_terms(expr):
             found += free_terms(term)
 
     return found
+
+
+def is_time_invariant(expr, mapper=None):
+    """
+    Check if expr is time invariant. A mapper from symbols to values may be
+    provided to determine whether any of the symbols involved in the evaluation
+    of expr are time-dependent. If a symbol in expr does not appear in mapper,
+    then time invariance will be inferred from its shape.
+    """
+    is_time_dependent = lambda e: t in e.atoms()
+    get_read_symbols = lambda e: e.find(Symbol) | e.find(Indexed)
+    mapper = mapper or {}
+
+    if expr.is_Equality:
+        if is_time_dependent(expr.lhs):
+            return False
+        else:
+            expr = expr.rhs
+
+    to_visit = get_read_symbols(expr)
+    while to_visit:
+        symbol = to_visit.pop()
+        if is_time_dependent(symbol):
+            return False
+        if symbol in mapper:
+            to_visit |= get_read_symbols(mapper[symbol].rhs)
+
+    return True
 
 
 def expression_shape(expr):
