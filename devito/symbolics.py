@@ -126,6 +126,14 @@ class Temporary(Eq):
     def is_terminal(self):
         return len(self.readby) == 0
 
+    @property
+    def inflow(self):
+        return len(self._reads)
+
+    @property
+    def outflow(self):
+        return len(self._readby)
+
     def __repr__(self):
         return "DSE(%s, reads=%s, readby=%s)" % (super(Temporary, self).__repr__(),
                                                  str(self.reads), str(self.readby))
@@ -191,9 +199,18 @@ class Rewriter(object):
             if not is_time_invariant(node):
                 handle = expand_mul(node.rhs)
 
-                indexed = handle.find(lambda i: isinstance(i, Indexed))
-                collectable = [i for i in indexed if i.base in time_varying_syms]
-                handle = collect(handle, collectable)
+                # SymPy's collect is insanely slow, so we handcraft our own
+                # factorization. Note: after expansion handle is in sum-of-mul form
+                indexed = handle.find(Indexed)
+                factorizable = [i for i in indexed if i.base in time_varying_syms]
+                common_factors = {}
+                for arg in handle.args:
+                    for factor in factorizable:
+                        if factor in arg.args:
+                            common_factors.setdefault(factor, []).append(arg)
+                            break
+                factorized = [Add(*v).collect(k) for k, v in common_factors.items()]
+                handle = Add(*factorized)
 
                 start = len(time_invariants)
                 reconstructed, mapper = self._create_time_invariants(handle, start)
@@ -209,7 +226,6 @@ class Rewriter(object):
             processing[lhs] = node
 
             # Substitute into subsequent temporaries
-            # TODO : extend if to take THRESHOLD into account
             if not node.is_terminal:
                 for j in node.readby:
                     handle = processing.get(j, graph[j])
