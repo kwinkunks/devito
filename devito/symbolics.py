@@ -160,8 +160,8 @@ class Rewriter(object):
 
         if self.mode == 'advanced':
             graph = self._temporaries_graph(processed)
-            time_invariants, processed = self._process_graph(graph)
-            self._optimize_time_invariants(time_invariants, processed)
+            graph = self._process_graph(graph)
+            time_invariants, processed = self._optimize_graph(graph)
 
         return time_invariants + processed
 
@@ -173,7 +173,7 @@ class Rewriter(object):
         Node = namedtuple('Node', ['rhs', 'reads', 'readby'])
 
         for lhs, rhs in [i.args for i in temporaries]:
-            mapper[lhs] = Node(rhs, {i for i in rhs.atoms() if i in mapper}, set())
+            mapper[lhs] = Node(rhs, {i for i in terminals(rhs) if i in mapper}, set())
             for i in mapper[lhs].reads:
                 assert i in mapper, "Illegal Flow"
                 mapper[i].readby.add(lhs)
@@ -201,28 +201,36 @@ class Rewriter(object):
 
                 # SymPy's collect is insanely slow, so we handcraft our own
                 # factorization. Note: after expansion handle is in sum-of-mul form
-                indexed = handle.find(Indexed)
-                factorizable = [i for i in indexed if i.base in time_varying_syms]
-                common_factors = {}
-                for arg in handle.args:
-                    for factor in factorizable:
-                        if factor in arg.args:
-                            common_factors.setdefault(factor, []).append(arg)
-                            break
-                factorized = [Add(*v).collect(k) for k, v in common_factors.items()]
-                handle = Add(*factorized)
+                if handle.is_Add:
+                    indexed = handle.find(Indexed)
+                    factorizable = [i for i in indexed if i.base in time_varying_syms]
+                    mapper = {}
+                    for arg in handle.args:
+                        for factor in factorizable:
+                            if factor in arg.args:
+                                mapper.setdefault(factor, []).append(arg)
+                                break
+                    factorized = [Add(*v).collect(k) for k, v in mapper.items()]
+                    handle = Add(*factorized)
 
                 start = len(time_invariants)
-                reconstructed, mapper = self._create_time_invariants(handle, start)
+                rebuilt, mapper = self._create_time_invariants(handle, start)
 
-                node = Temporary(lhs, reconstructed,
-                                 reads=node.reads, readby=node.readby)
+                # Can I reuse some temporaries ?
+                reads = []
+                for k, v in mapper.items():
+                    if v in time_invariants.values():
+                        index = time_invariants.values().index(v)
+                        found = time_invariants.keys()[index]
+                        rebuilt = rebuilt.xreplace({k: found})
+                        reads.append(found)
+                    else:
+                        time_invariants[k] = v
+                        reads.append(k)
+                reads = set(reads) or node.reads
 
-                for temp, value in mapper.items():
-                    reads = {i for i in value.find(Indexed) if i in time_invariants}
-                    time_invariants[temp] = Temporary(temp, value,
-                                                      reads=reads, readby=[lhs],
-                                                      time_invariant=True)
+                node = Temporary(lhs, rebuilt, reads=reads, readby=node.readby)
+
             processing[lhs] = node
 
             # Substitute into subsequent temporaries
@@ -235,11 +243,32 @@ class Rewriter(object):
                                               reads=reads, readby=handle.readby)
                 processing.pop(lhs, None)
 
-        # Reorder based on original position
-        processing = sorted(processing.values(),
-                            key=lambda n: graph.keys().index(n.lhs))
+        # Return updated graph
+        time_invariants = [Eq(k, v) for k, v in time_invariants.items()]
+        graph = self._temporaries_graph(time_invariants + processing.values())
 
-        return time_invariants.values(), processing
+        return graph
+
+    def _optimize_graph(self, graph):
+        """
+        Eliminate duplicate time invariants and collect common factors.
+        """
+        from IPython import embed; embed()
+
+        # Eliminate duplicates
+        inverse = OrderedDict()
+        for i in time_invariants:
+            inverse.setdefault(i.rhs, []).append(i)
+
+        duplicates = [v for k, v in inverse.items() if len(v) > 1]
+        while duplicates:
+            handle = duplicates.pop(0)
+            pivot = handle.pop(0)
+            for i in handle:
+                for j in i.readby:
+                    pass
+
+        return time_invariants, processed
 
     def _create_time_invariants(self, expr, start=0):
         """
@@ -258,7 +287,7 @@ class Rewriter(object):
         """
 
         def run(expr, root, mapper):
-            # Return semantic: (reconstructed expr, time invariant flag)
+            # Return semantic: (rebuilt expr, time invariant flag)
             if expr in [S.Zero, S.One, S.NegativeOne, S.Half]:
                 return (expr.func(), True)
             elif expr.is_Atom:
@@ -299,13 +328,6 @@ class Rewriter(object):
 
         mapper = OrderedDict()
         return run(expr, expr, mapper)[0], mapper
-
-    def _optimize_time_invariants(self, time_invariants, processed):
-        """
-        Eliminate duplicate time invariants and collect common factors.
-        """
-        # TODO
-        pass
 
     def _cse(self):
         """
@@ -439,7 +461,6 @@ def is_time_invariant(expr, mapper=None):
     then time invariance will be inferred from its shape.
     """
     is_time_dependent = lambda e: t in e.atoms()
-    get_read_symbols = lambda e: e.find(Symbol) | e.find(Indexed)
     mapper = mapper or {}
 
     if expr.is_Equality:
@@ -448,15 +469,27 @@ def is_time_invariant(expr, mapper=None):
         else:
             expr = expr.rhs
 
-    to_visit = get_read_symbols(expr)
+    to_visit = terminals(expr)
     while to_visit:
         symbol = to_visit.pop()
         if is_time_dependent(symbol):
             return False
         if symbol in mapper:
-            to_visit |= get_read_symbols(mapper[symbol].rhs)
+            to_visit |= terminals(mapper[symbol].rhs)
 
     return True
+
+
+def terminals(expr):
+    indexed = list(expr.find(Indexed))
+
+    # To be discarded
+    junk = flatten(i.atoms() for i in indexed)
+
+    symbols = list(expr.find(Symbol))
+    symbols = [i for i in symbols if i not in junk]
+
+    return indexed + symbols
 
 
 def expression_shape(expr):
