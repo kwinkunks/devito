@@ -139,14 +139,41 @@ class Temporary(Eq):
                                                  str(self.reads), str(self.readby))
 
 
+class Trace(OrderedDict):
+
+    def __init__(self, root, graph, *args, **kwargs):
+        super(Trace, self).__init__(*args, **kwargs)
+        self._root = root
+        self._compute(graph)
+
+    def _compute(self, graph):
+        if self.root not in graph:
+            return
+        to_visit = [(graph[self.root], 0)]
+        while to_visit:
+            temporary, level = to_visit.pop(0)
+            self.__setitem__(temporary.lhs, level)
+            to_visit.extend([(graph[i], level + 1) for i in temporary.reads])
+
+    @property
+    def root(self):
+        return self._root
+
+    @property
+    def length(self):
+        return len(self)
+
+    def intersect(self, other):
+        return set(self.keys()).intersection(other.keys())
+
+
 class Rewriter(object):
 
     """
     Transform expressions to create time-invariant computation.
     """
 
-    # Do not rewrite expressions accessing more than THRESHOLD temporaries
-    THRESHOLD = 20
+    MAX_GRAPH_SIZE = 20
 
     def __init__(self, expr, mode='basic'):
         self.expr = expr
@@ -161,7 +188,8 @@ class Rewriter(object):
         if self.mode == 'advanced':
             graph = self._temporaries_graph(processed)
             graph = self._process_graph(graph)
-            time_invariants, processed = self._optimize_graph(graph)
+            subgraphs = self._split_into_subgraphs(graph)
+            time_invariants, processed = self._optimize_subgraphs(subgraphs)
 
         return time_invariants + processed
 
@@ -178,16 +206,64 @@ class Rewriter(object):
                 assert i in mapper, "Illegal Flow"
                 mapper[i].readby.add(lhs)
 
-        return [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
-                for lhs, node in mapper.items()]
+        temporaries = [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
+                       for lhs, node in mapper.items()]
+        return OrderedDict([(i.lhs, i) for i in temporaries])
+
+    def _reorder_graph(self, graph):
+        ordered = OrderedGraph([(i, j) for i, j in graph.items() if j.is_terminal])
+        assert ordered, "Illegal Graph"
+
+        to_visit = ordered.values()
+        while to_visit:
+            item = to_visit.pop(0)
+            for i in item.reads:
+                ordered[i] = graph[i]
+                to_visit.append(i)
+
+        return ordered
+
+    def _split_into_subgraphs(self, graph):
+        """
+        Split a temporaries graph into multiple, smaller subgraphs. A heuristic
+        typical of graph coloring algorithms is used: nodes that, in a given
+        scheduling step, have maximal sharing are put in the same subgraph. No
+        more than self.MAX_GRAPH_SIZE nodes can stay in a subgraph.
+        """
+        subgraphs = []
+        terminals = [j for i, j in graph.items() if j.is_terminal]
+        for terminal in terminals:
+            subgraph = OrderedDict()
+            to_schedule, index = list(terminal.reads), 0
+            traces = {i: Trace(i, graph) for i in to_schedule}
+            extracted_args, terminal_args = set(), set(terminal.rhs.args)
+            while to_schedule:
+                item = to_schedule.pop(index)
+                trace = traces[item]
+                for k, v in trace.items():
+                    subgraph[k] = graph[k]
+                if not to_schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
+                    # Extract args in terminal computable with this subgraph
+                    args = {i for i in terminal_args - extracted_args
+                            if any(i.find(j) for j in subgraph.keys()}
+                    extracted_args |= args
+                    extracted_rhs = Add(*extracted_args)
+                    subgraph = subgraph.values() + [Eq(terminal.lhs, extracted_rhs)]
+                    subgraphs.append(self._temporaries_graph(subgraph))
+                    subgraph = OrderedDict()
+                else:
+                    scores = [len(trace.intersect(traces[i])) for i in to_schedule]
+                    max_score_index = scores.index(max(scores))
+                    index = to_schedule[max_score_index]
+                from IPython import embed; embed()
+
+        return subgraphs
 
     def _process_graph(self, graph):
         """
         Extract time-invariant computation from a temporaries graph.
         """
-        graph = OrderedDict([(i.lhs, i) for i in graph])
         processing = OrderedDict()
-
         time_invariants = OrderedDict()
         time_varying_syms = [i.lhs.base for i in self.expr]
 
@@ -249,26 +325,12 @@ class Rewriter(object):
 
         return graph
 
-    def _optimize_graph(self, graph):
+    def _optimize_graph(self, subgraphs):
         """
         Eliminate duplicate time invariants and collect common factors.
         """
-        from IPython import embed; embed()
 
-        # Eliminate duplicates
-        inverse = OrderedDict()
-        for i in time_invariants:
-            inverse.setdefault(i.rhs, []).append(i)
-
-        duplicates = [v for k, v in inverse.items() if len(v) > 1]
-        while duplicates:
-            handle = duplicates.pop(0)
-            pivot = handle.pop(0)
-            for i in handle:
-                for j in i.readby:
-                    pass
-
-        return time_invariants, processed
+        return [], subgraphs
 
     def _create_time_invariants(self, expr, start=0):
         """
