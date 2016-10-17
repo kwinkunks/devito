@@ -187,7 +187,8 @@ class Rewriter(object):
 
         if self.mode == 'advanced':
             graph = self._temporaries_graph(processed)
-            graph = self._process_graph(graph)
+            graph = self._normalize_graph(graph)
+            #graph = self._process_graph(graph)
             subgraphs = self._split_into_subgraphs(graph)
             time_invariants, processed = self._optimize_subgraphs(subgraphs)
 
@@ -210,18 +211,22 @@ class Rewriter(object):
                        for lhs, node in mapper.items()]
         return OrderedDict([(i.lhs, i) for i in temporaries])
 
-    def _reorder_graph(self, graph):
-        ordered = OrderedGraph([(i, j) for i, j in graph.items() if j.is_terminal])
-        assert ordered, "Illegal Graph"
+    def _normalize_graph(self, graph):
+        """
+        Reduce terminals to a sum-of-muls form.
+        """
+        normalized = OrderedDict()
 
-        to_visit = ordered.values()
-        while to_visit:
-            item = to_visit.pop(0)
-            for i in item.reads:
-                ordered[i] = graph[i]
-                to_visit.append(i)
+        for k, v in graph.items():
+            reads = set(v.reads)
+            readby = set(v.readby)
+            if v.is_terminal and not v.rhs.is_Add:
+                expanded = expand_mul(v.rhs)
+                normalized[k] = Temporary(k, expanded, reads=reads, readby=readby)
+            else:
+                normalized[k] = Temporary(k, v.rhs, reads=reads, readby=readby)
 
-        return ordered
+        return normalized
 
     def _split_into_subgraphs(self, graph):
         """
@@ -231,31 +236,32 @@ class Rewriter(object):
         more than self.MAX_GRAPH_SIZE nodes can stay in a subgraph.
         """
         subgraphs = []
-        terminals = [j for i, j in graph.items() if j.is_terminal]
+        terminals = [i for i in graph.values() if i.is_terminal]
+        traces = {i: Trace(i, graph) for i in graph.keys()}
+
         for terminal in terminals:
             subgraph = OrderedDict()
             to_schedule, index = list(terminal.reads), 0
-            traces = {i: Trace(i, graph) for i in to_schedule}
-            extracted_args, terminal_args = set(), set(terminal.rhs.args)
+            all_args = set(terminal.rhs.args)
             while to_schedule:
                 item = to_schedule.pop(index)
                 trace = traces[item]
-                for k, v in trace.items():
+                for k, v in reversed(trace.items()):
                     subgraph[k] = graph[k]
                 if not to_schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
-                    # Extract args in terminal computable with this subgraph
-                    args = {i for i in terminal_args - extracted_args
-                            if any(i.find(j) for j in subgraph.keys()}
-                    extracted_args |= args
-                    extracted_rhs = Add(*extracted_args)
-                    subgraph = subgraph.values() + [Eq(terminal.lhs, extracted_rhs)]
+                    # Extract all args in terminal computable with this subgraph
+                    args = {i for i in all_args
+                            if any(j in i.args for j in subgraph.keys())}
+                    from IPython import embed; embed()
+                    all_args -= args
+                    subgraph = subgraph.values() + [Eq(terminal.lhs, Add(*args))]
                     subgraphs.append(self._temporaries_graph(subgraph))
                     subgraph = OrderedDict()
                 else:
                     scores = [len(trace.intersect(traces[i])) for i in to_schedule]
-                    max_score_index = scores.index(max(scores))
-                    index = to_schedule[max_score_index]
-                from IPython import embed; embed()
+                    print max(scores), " ", 
+                    index = scores.index(max(scores))
+            print ""
 
         return subgraphs
 
