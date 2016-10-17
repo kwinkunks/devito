@@ -164,7 +164,10 @@ class Trace(OrderedDict):
         return len(self)
 
     def intersect(self, other):
-        return set(self.keys()).intersection(other.keys())
+        return Trace(self.root, {}, [(k, v) for k, v in self.items() if k in other])
+
+    def union(self, other):
+        return Trace(self.root, {}, [(k, v) for k, v in self.items() + other.items()])
 
 
 class Rewriter(object):
@@ -240,25 +243,21 @@ class Rewriter(object):
         traces = {i: Trace(i, graph) for i in graph.keys()}
 
         for terminal in terminals:
-            subgraph = OrderedDict()
-            to_schedule, index = list(terminal.reads), 0
-            all_args = set(terminal.rhs.args)
-            while to_schedule:
-                item = to_schedule.pop(index)
-                trace = traces[item]
+            subgraph, args = OrderedDict(), []
+            schedule, index = list(terminal.rhs.args), 0
+            while schedule:
+                item = schedule.pop(index)
+                trace = trace_union(item.args, traces)
                 for k, v in reversed(trace.items()):
                     subgraph[k] = graph[k]
-                if not to_schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
-                    # Extract all args in terminal computable with this subgraph
-                    args = {i for i in all_args
-                            if any(j in i.args for j in subgraph.keys())}
-                    from IPython import embed; embed()
-                    all_args -= args
+                if not schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
                     subgraph = subgraph.values() + [Eq(terminal.lhs, Add(*args))]
                     subgraphs.append(self._temporaries_graph(subgraph))
-                    subgraph = OrderedDict()
+                    subgraph, args = OrderedDict(), []
                 else:
-                    scores = [len(trace.intersect(traces[i])) for i in to_schedule]
+                    args.append(item)
+                    scores = [len(trace.intersection(trace_union(i, traces)))
+                              for i in schedule]
                     print max(scores), " ", 
                     index = scores.index(max(scores))
             print ""
@@ -558,6 +557,17 @@ def terminals(expr):
     symbols = [i for i in symbols if i not in junk]
 
     return indexed + symbols
+
+
+def trace_union(iterable, traces_map):
+    in_trace = [i for i in iterable if i in traces_map]
+    if in_trace:
+        item_trace = in_trace.pop(0)
+    else:
+        item_trace = set()
+    while in_trace:
+        item_trace = item_trace.union(in_trace.pop(0))
+    return item_trace
 
 
 def expression_shape(expr):
