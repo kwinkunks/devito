@@ -512,9 +512,13 @@ class Propagator(object):
         if self.cache_blocking is not None:
             self._decide_block_sizes()
 
-            loop_body = self.generate_space_loops_blocking(loop_body)
+            #loop_body = self.generate_space_loops_blocking(loop_body)
+            generate = self.generate_space_loops_blocking
         else:
-            loop_body = self.generate_space_loops(loop_body)
+            #loop_body = self.generate_space_loops(loop_body)
+            generate = self.generate_space_loops
+
+        from IPython import embed; embed()
 
         omp_master = [cgen.Pragma("omp master")] if self.compiler.openmp else []
         omp_single = [cgen.Pragma("omp single")] if self.compiler.openmp else []
@@ -534,19 +538,24 @@ class Propagator(object):
         loop_body = [cgen.Block(omp_for + loop_body)]
 
         # Time-invariant computation
-        ctype = cgen.dtype_to_ctype(self.dtype)
-        declaration = "%(type)s (*%(name)s)%(dsize)s;"
-        funcall = "posix_memalign(&%(name)s, 64, sizeof(%(type)s%(size)s));"
-        template = "%s %s" % (declaration, funcall)
-        template = template % {"type": ctype, "name": "%(name)s",
-                               "dsize": "".join("[%d]" % j for j in self.shape[:-1]),
-                               "size": "".join("[%d]" % j for j in self.shape)}
-        declarations = [cgen.Line(template % {'name': i.lhs.base})
-                        for i in self.time_invariants]
-        time_invariants = [self.convert_equality_to_cgen(i)
-                           for i in self.time_invariants]
-        time_invariants = self.generate_space_loops(cgen.Block(time_invariants))
-        time_invariants = [cgen.Block(declarations + time_invariants)]
+        if self.time_invariants:
+            ctype = cgen.dtype_to_ctype(self.dtype)
+            declaration = "%(type)s (*%(name)s)%(dsize)s;"
+            funcall = "posix_memalign(&%(name)s, 64, sizeof(%(type)s%(size)s));"
+            template = "%s %s" % (declaration, funcall)
+            template = template % {
+                "type": ctype, "name": "%(name)s",
+                "dsize": "".join("[%d]" % j for j in self.shape[:-1]),
+                "size": "".join("[%d]" % j for j in self.shape)
+            }
+            declarations = [cgen.Line(template % {'name': i.lhs.base})
+                            for i in self.time_invariants]
+            time_invariants = [self.convert_equality_to_cgen(i)
+                               for i in self.time_invariants]
+            time_invariants = self.generate_space_loops(cgen.Block(time_invariants))
+            time_invariants = [cgen.Block(declarations + time_invariants)]
+        else:
+            time_invariants = []
 
         # Statements to be inserted into the time loop before the spatial loop
         pre_stencils = [self.time_substitutions(x)
@@ -838,10 +847,12 @@ class Propagator(object):
 
         :returns: The resulting :class:`devito.function_manager.FunctionDescriptor`
         """
-        try:  # Assume we have been given a a loop body in cgen types
+        try:
+            # Assume we have been given a a loop body in cgen types
             self.fd.set_body(self.generate_loops(self.loop_body))
-        except:  # We might have been given Sympy expression to evaluate
-            # This is the more common use case so this will show up in error messages
+        except:
+            # We might have been given Sympy expression to evaluate
+            # This is the most common use case, so will show up in error messages
             self.fd.set_body(self.generate_loops(self.sympy_to_cgen(self.stencils)))
 
         return self.fd
