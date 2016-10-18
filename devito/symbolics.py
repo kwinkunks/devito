@@ -194,10 +194,9 @@ class Rewriter(object):
             graph = self._normalize_graph(graph)
             graph = self._process_graph(graph)
             subgraphs = self._split_into_subgraphs(graph)
-            from IPython import embed; embed()
-            time_invariants, processed = self._optimize_subgraphs(subgraphs)
+            processed = self._optimize_graph(subgraphs)
 
-        return time_invariants + processed
+        return processed
 
     def _temporaries_graph(self, temporaries):
         """
@@ -330,12 +329,29 @@ class Rewriter(object):
 
         return graph
 
-    def _optimize_graph(self, subgraphs):
+    def _optimize_graph(self, graphs):
         """
-        Eliminate duplicate time invariants and collect common factors.
-        """
+        Apply a number of transformations: ::
 
-        return [], subgraphs
+            * Heuristic collection of common factors.
+            * Contraction to scalars (e.g., t[i][j] -> t)
+
+        :param graphs: a single graph or a list of graphs.
+        """
+        try:
+            graphs.items()
+        except AttributeError:
+            graphs = [graphs]
+
+        # Heuristic collection of common factors
+        for graph in graphs:
+            pass
+
+        # Contraction to scalars
+        for graph in graphs:
+            pass
+
+        return graphs
 
     def _create_time_invariants(self, expr, start=0):
         """
