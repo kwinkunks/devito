@@ -105,10 +105,12 @@ class Temporary(Eq):
         reads = kwargs.pop('reads', [])
         readby = kwargs.pop('readby', [])
         time_invariant = kwargs.pop('time_invariant', False)
+        scope = kwargs.pop('scope', 0)
         obj = super(Temporary, cls).__new__(cls, lhs, rhs, **kwargs)
         obj._reads = set(reads)
         obj._readby = set(readby)
         obj._is_time_invariant = time_invariant
+        obj._scope = scope
         return obj
 
     @property
@@ -126,6 +128,14 @@ class Temporary(Eq):
     @property
     def is_terminal(self):
         return len(self.readby) == 0
+
+    @property
+    def is_tensor(self):
+        return isinstance(self.lhs, Indexed) and self.lhs.rank > 0
+
+    @property
+    def scope(self):
+        return self._scope
 
     @property
     def inflow(self):
@@ -194,11 +204,12 @@ class Rewriter(object):
             graph = self._normalize_graph(graph)
             graph = self._process_graph(graph)
             subgraphs = self._split_into_subgraphs(graph)
-            processed = self._optimize_graph(subgraphs)
+            subgraphs = self._optimize_graph(subgraphs)
+            processed = flatten(i.values() for i in subgraphs)
 
         return processed
 
-    def _temporaries_graph(self, temporaries):
+    def _temporaries_graph(self, temporaries, scope=0):
         """
         Create a dependency graph given a list of sympy.Eq.
         """
@@ -211,9 +222,9 @@ class Rewriter(object):
                 assert i in mapper, "Illegal Flow"
                 mapper[i].readby.add(lhs)
 
-        temporaries = [Temporary(lhs, node.rhs, reads=node.reads, readby=node.readby)
-                       for lhs, node in mapper.items()]
-        return OrderedDict([(i.lhs, i) for i in temporaries])
+        nodes = [Temporary(k, v.rhs, reads=v.reads, readby=v.readby, scope=scope)
+                 for k, v in mapper.items()]
+        return OrderedDict([(i.lhs, i) for i in nodes])
 
     def _normalize_graph(self, graph):
         """
@@ -254,7 +265,8 @@ class Rewriter(object):
                     subgraph[k] = graph[k]
                 if not schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
                     subgraph = subgraph.values() + [Eq(terminal.lhs, Add(*args))]
-                    subgraphs.append(self._temporaries_graph(subgraph))
+                    subgraph = self._temporaries_graph(subgraph, len(subgraphs))
+                    subgraphs.append(subgraph)
                     subgraph, args = OrderedDict(), []
                 else:
                     scores = [len(trace.intersect(trace_union(i.args, traces)))
@@ -338,20 +350,32 @@ class Rewriter(object):
 
         :param graphs: a single graph or a list of graphs.
         """
-        try:
-            graphs.items()
-        except AttributeError:
-            graphs = [graphs]
+        graphs = [graphs] if isinstance(graphs, dict) else graphs
 
         # Heuristic collection of common factors
+        optimized_graphs = []
         for graph in graphs:
-            pass
+            optimized_graphs.append(graph)
 
         # Contraction to scalars
+        graphs, optimized_graphs = optimized_graphs, []
+        to_replace = {}
         for graph in graphs:
-            pass
+            optimized_graph = OrderedDict()
+            for k, v in graph.items():
+                if not v.is_time_invariant and not v.is_terminal and v.is_tensor:
+                    to_replace[k] = k.base.label
+                    node = Eq(k.base.label, v.rhs.xreplace(to_replace))
+                else:
+                    node = Eq(v.lhs, v.rhs)
+                optimized_graph[k.base.label] = node
+            # TODO:
+            # - create temporaries graph with proper scope
+            # - update is_time_invariant flag
+            optimized_graphs.append(optimized_graph)
 
-        return graphs
+        from IPython import embed; embed()
+        return optimized_graphs
 
     def _create_time_invariants(self, expr, start=0):
         """
