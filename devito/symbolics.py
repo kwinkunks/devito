@@ -581,3 +581,25 @@ def expression_shape(expr):
     indices = [flatten(j.free_symbols for j in i.indices) for i in indexed]
     assert all(set(indices[0]).issuperset(set(i)) for i in indices)
     return tuple(indices[0])
+
+
+def estimate_cost(handle):
+    try:
+        # Is it a plain SymPy object ?
+        iter(handle)
+    except TypeError:
+        handle = [handle]
+    try:
+        # Is it a dict ?
+        handle = handle.values()
+    except AttributeError:
+        try:
+            # Must be a list of dicts then
+            handle = flatten(i.values() for i in handle)
+        except AttributeError:
+            pass
+    # At this point it must be a list of SymPy objects
+    try:
+        return sum(count_ops(i) for i in handle)
+    except:
+        warning("Cannot estimate cost of %s" % str(handle))
