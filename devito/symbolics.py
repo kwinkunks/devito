@@ -15,6 +15,7 @@ from sympy import *
 
 from devito.dimension import t, x, y, z
 from devito.interfaces import SymbolicData
+from devito.logger import warning
 
 __all__ = ['dse_dimensions', 'dse_symbols', 'dse_dtype', 'dse_indexify',
            'dse_rewrite', 'dse_tolambda']
@@ -186,13 +187,14 @@ class Rewriter(object):
         processed = self.expr
 
         if self.mode in ['basic', 'advanced']:
-            time_invariants, processed = [], self._cse()
+            processed = self._cse()
 
         if self.mode == 'advanced':
             graph = self._temporaries_graph(processed)
             graph = self._normalize_graph(graph)
-            #graph = self._process_graph(graph)
+            graph = self._process_graph(graph)
             subgraphs = self._split_into_subgraphs(graph)
+            from IPython import embed; embed()
             time_invariants, processed = self._optimize_subgraphs(subgraphs)
 
         return time_invariants + processed
@@ -246,8 +248,9 @@ class Rewriter(object):
             subgraph, args = OrderedDict(), []
             schedule, index = list(terminal.rhs.args), 0
             while schedule:
-                item = schedule.pop(index)
-                trace = trace_union(item.args, traces)
+                handle = schedule.pop(index)
+                args.append(handle)
+                trace = trace_union(handle.args, traces)
                 for k, v in reversed(trace.items()):
                     subgraph[k] = graph[k]
                 if not schedule or len(subgraph) > Rewriter.MAX_GRAPH_SIZE:
@@ -255,12 +258,9 @@ class Rewriter(object):
                     subgraphs.append(self._temporaries_graph(subgraph))
                     subgraph, args = OrderedDict(), []
                 else:
-                    args.append(item)
-                    scores = [len(trace.intersection(trace_union(i, traces)))
+                    scores = [len(trace.intersect(trace_union(i.args, traces)))
                               for i in schedule]
-                    print max(scores), " ", 
                     index = scores.index(max(scores))
-            print ""
 
         return subgraphs
 
@@ -559,15 +559,18 @@ def terminals(expr):
     return indexed + symbols
 
 
-def trace_union(iterable, traces_map):
-    in_trace = [i for i in iterable if i in traces_map]
+def trace_union(iterable, mapper):
+    """
+    Compute the union of the traces of the symbols in iterable retrieved from mapper.
+    """
+    in_trace = [i for i in iterable if i in mapper]
     if in_trace:
-        item_trace = in_trace.pop(0)
+        handle = mapper[in_trace.pop(0)]
     else:
-        item_trace = set()
+        handle = set()
     while in_trace:
-        item_trace = item_trace.union(in_trace.pop(0))
-    return item_trace
+        handle = handle.union(mapper[in_trace.pop(0)])
+    return handle
 
 
 def expression_shape(expr):
