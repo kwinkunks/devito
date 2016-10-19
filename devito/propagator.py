@@ -3,6 +3,7 @@ from __future__ import absolute_import
 import operator
 from collections import Iterable, defaultdict
 from hashlib import sha1
+from itertools import groupby
 from os import path
 from random import randint
 
@@ -115,7 +116,7 @@ class Propagator(object):
 
         # Separate hoistable code from time-dependent stencils
         self.time_invariants = [i for i in stencils if isinstance(i, Temporary)
-                                and i.is_time_invariant]
+                                and i.hoistable]
         self.stencils = [i for i in stencils if i not in self.time_invariants]
 
         # Cache blocking and block sizes
@@ -508,18 +509,6 @@ class Propagator(object):
         :returns: :class:`cgen.Block` representing the loop
         """
 
-        # Space loops
-        if self.cache_blocking is not None:
-            self._decide_block_sizes()
-
-            #loop_body = self.generate_space_loops_blocking(loop_body)
-            generate = self.generate_space_loops_blocking
-        else:
-            #loop_body = self.generate_space_loops(loop_body)
-            generate = self.generate_space_loops
-
-        from IPython import embed; embed()
-
         omp_master = [cgen.Pragma("omp master")] if self.compiler.openmp else []
         omp_single = [cgen.Pragma("omp single")] if self.compiler.openmp else []
         omp_parallel = [cgen.Pragma("omp parallel")] if self.compiler.openmp else []
@@ -535,20 +524,39 @@ class Propagator(object):
         else:
             time_stepping = []
 
-        loop_body = [cgen.Block(omp_for + loop_body)]
+        # Space loops
+        if self.cache_blocking is not None:
+            self._decide_block_sizes()
+            generate = self.generate_space_loops_blocking
+        else:
+            generate = self.generate_space_loops
+
+        if all(isinstance(i, Temporary) for i in loop_body):
+            # Split expressions based on their scope
+            #for k, g in groupby(data, lambda i: i.scope):
+            #loop_body = flatten()
+            processed = []
+            for k, v in groupby(loop_body, lambda i: i.scope):
+                generated = generate(self.sympy_to_cgen(list(v)))
+                processed.extend([cgen.Block(omp_for + generated)])
+            loop_body = processed
+        else:
+            generated = generate(self.sympy_to_cgen(loop_body))
+            loop_body = [cgen.Block(omp_for + generated)]
 
         # Time-invariant computation
         if self.time_invariants:
             ctype = cgen.dtype_to_ctype(self.dtype)
             declaration = "%(type)s (*%(name)s)%(dsize)s;"
-            funcall = "posix_memalign(&%(name)s, 64, sizeof(%(type)s%(size)s));"
+            funcall = "posix_memalign((void**)&%(name)s, 64, sizeof(%(type)s%(size)s));"
             template = "%s %s" % (declaration, funcall)
             template = template % {
                 "type": ctype, "name": "%(name)s",
                 "dsize": "".join("[%d]" % j for j in self.shape[:-1]),
                 "size": "".join("[%d]" % j for j in self.shape)
             }
-            declarations = [cgen.Line(template % {'name': i.lhs.base})
+            getname = lambda i: i.lhs.base if isinstance(i.lhs, Indexed) else i.lhs
+            declarations = [cgen.Line(template % {'name': getname(i)})
                             for i in self.time_invariants]
             time_invariants = [self.convert_equality_to_cgen(i)
                                for i in self.time_invariants]
@@ -853,7 +861,7 @@ class Propagator(object):
         except:
             # We might have been given Sympy expression to evaluate
             # This is the most common use case, so will show up in error messages
-            self.fd.set_body(self.generate_loops(self.sympy_to_cgen(self.stencils)))
+            self.fd.set_body(self.generate_loops(self.stencils))
 
         return self.fd
 

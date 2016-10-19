@@ -111,6 +111,7 @@ class Temporary(Eq):
         obj._readby = set(readby)
         obj._is_time_invariant = time_invariant
         obj._scope = scope
+        obj._hoistable = False
         return obj
 
     @property
@@ -148,6 +149,14 @@ class Temporary(Eq):
     @property
     def outflow(self):
         return len(self._readby)
+
+    @property
+    def hoistable(self):
+        return self._hoistable
+
+    def try_make_hoistable(self):
+        if self.is_time_invariant:
+            self._hoistable = True
 
     def __repr__(self):
         return "DSE(%s, reads=%s, readby=%s)" % (super(Temporary, self).__repr__(),
@@ -297,16 +306,16 @@ class Rewriter(object):
                 # SymPy's collect is insanely slow, so we handcraft our own
                 # factorization. Note: after expansion handle is in sum-of-mul form
                 if handle.is_Add:
-                    indexed = handle.find(Indexed)
-                    factorizable = [i for i in indexed if i.base in time_varying_syms]
-                    mapper = {}
+                    mapper, others = {}, []
                     for arg in handle.args:
-                        for factor in factorizable:
-                            if factor in arg.args:
-                                mapper.setdefault(factor, []).append(arg)
-                                break
+                        factorizable = [i for i in arg.args if isinstance(i, Indexed)
+                                        and i.base in time_varying_syms]
+                        if len(factorizable) == 1:
+                            mapper.setdefault(factorizable[0], []).append(arg)
+                        else:
+                            others.append(arg)
                     factorized = [Add(*v).collect(k) for k, v in mapper.items()]
-                    handle = Add(*factorized)
+                    handle = Add(*(factorized + others))
 
                 start = len(time_invariants)
                 rebuilt, mapper = self._create_time_invariants(handle, start)
@@ -345,31 +354,39 @@ class Rewriter(object):
 
     def _optimize_graph(self, graphs):
         """
-        Apply a number of transformations: ::
+        Apply the following transformations to each item in graphs: ::
 
             * Heuristic collection of common factors.
             * Contraction to scalars (e.g., t[i][j] -> t)
+            * Common sub-expressions elimination
+            * TODO: Cost-model driven time invariants declaration
 
         :param graphs: a single graph or a list of graphs.
         """
         graphs = [graphs] if isinstance(graphs, dict) else graphs
 
-        # Heuristic collection of common factors
+        # TODO: Heuristic collection of common factors
         optimized_graphs = []
         for graph in graphs:
             optimized_graphs.append(graph)
 
-        # Contraction to scalars
+        # Contraction to scalars + CSE
         graphs, optimized_graphs = optimized_graphs, []
         mapper = {}
         for graph in graphs:
             assert all(graph.values()[0].scope == v.scope for v in graph.values())
             scope = graph.values()[0].scope
-            optimized_graph = []
+            contracted = []
             for k, v in graph.items():
                 mapper[k] = k.base.label if v.is_scalarizable else k
-                optimized_graph.append(Eq(k, v.rhs).xreplace(mapper))
-            optimized_graphs.append(self._temporaries_graph(optimized_graph, scope))
+                contracted.append(Eq(k, v.rhs).xreplace(mapper))
+            contracted = self._cse(contracted)
+            optimized_graphs.append(self._temporaries_graph(contracted, scope))
+
+        # TODO: Time invariants declaration
+        for graph in optimized_graphs:
+            for k, v in graph.items():
+                v.try_make_hoistable()
 
         return optimized_graphs
 
@@ -432,11 +449,14 @@ class Rewriter(object):
         mapper = OrderedDict()
         return run(expr, expr, mapper)[0], mapper
 
-    def _cse(self, exprs):
+    def _cse(self, exprs=None):
         """
         Perform common subexpression elimination.
         """
-        exprs = exprs if isinstance(exprs, list) else [exprs]
+        if exprs is None:
+            exprs = self.expr
+        if not isinstance(exprs, list):
+            exprs = [exprs]
 
         temps, stencils = cse(exprs, numbered_symbols("temp"))
 
@@ -494,8 +514,20 @@ class Rewriter(object):
                 if arg in to_revert:
                     subs_dict[arg] = to_revert[arg]
 
-        stencils = [stencil.xreplace(subs_dict) for stencil in stencils]
-        to_keep = [Eq(temp[0], temp[1].xreplace(subs_dict)) for temp in to_keep]
+        TMP = stencils
+        restored_stencils, restored_temps = [], []
+        for stencil in stencils:
+            old, new = stencil, stencil.xreplace(subs_dict)
+            while new != old:
+                old, new = new, new.xreplace(subs_dict)
+            restored_stencils.append(new)
+        for temp, assign in to_keep: 
+            old, new = assign, assign.xreplace(subs_dict)
+            while new != old:
+                old, new = new, new.xreplace(subs_dict)
+            restored_temps.append(Eq(temp, new))
+        stencils = restored_stencils
+        to_keep = restored_temps
 
         # If the RHS of a temporary variable is the LHS of a stencil,
         # update the value of the temporary variable after the stencil
