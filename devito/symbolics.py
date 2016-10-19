@@ -134,6 +134,10 @@ class Temporary(Eq):
         return isinstance(self.lhs, Indexed) and self.lhs.rank > 0
 
     @property
+    def is_scalarizable(self):
+        return self.is_time_invariant and not self.is_terminal and self.is_tensor
+
+    @property
     def scope(self):
         return self._scope
 
@@ -197,7 +201,7 @@ class Rewriter(object):
         processed = self.expr
 
         if self.mode in ['basic', 'advanced']:
-            processed = self._cse()
+            processed = self._cse(processed)
 
         if self.mode == 'advanced':
             graph = self._temporaries_graph(processed)
@@ -214,15 +218,17 @@ class Rewriter(object):
         Create a dependency graph given a list of sympy.Eq.
         """
         mapper = OrderedDict()
-        Node = namedtuple('Node', ['rhs', 'reads', 'readby'])
+        Node = namedtuple('Node', ['rhs', 'reads', 'readby', 'time_invariant'])
 
         for lhs, rhs in [i.args for i in temporaries]:
-            mapper[lhs] = Node(rhs, {i for i in terminals(rhs) if i in mapper}, set())
+            reads = {i for i in terminals(rhs) if i in mapper}
+            mapper[lhs] = Node(rhs, reads, set(), is_time_invariant(rhs, mapper))
             for i in mapper[lhs].reads:
                 assert i in mapper, "Illegal Flow"
                 mapper[i].readby.add(lhs)
 
-        nodes = [Temporary(k, v.rhs, reads=v.reads, readby=v.readby, scope=scope)
+        nodes = [Temporary(k, v.rhs, reads=v.reads, readby=v.readby,
+                           time_invariant=v.time_invariant, scope=scope)
                  for k, v in mapper.items()]
         return OrderedDict([(i.lhs, i) for i in nodes])
 
@@ -230,18 +236,15 @@ class Rewriter(object):
         """
         Reduce terminals to a sum-of-muls form.
         """
-        normalized = OrderedDict()
+        normalized = []
 
         for k, v in graph.items():
-            reads = set(v.reads)
-            readby = set(v.readby)
             if v.is_terminal and not v.rhs.is_Add:
-                expanded = expand_mul(v.rhs)
-                normalized[k] = Temporary(k, expanded, reads=reads, readby=readby)
+                normalized.append(Eq(k, expand_mul(v.rhs)))
             else:
-                normalized[k] = Temporary(k, v.rhs, reads=reads, readby=readby)
+                normalized.append(v)
 
-        return normalized
+        return self._temporaries_graph(normalized)
 
     def _split_into_subgraphs(self, graph):
         """
@@ -255,8 +258,8 @@ class Rewriter(object):
         traces = {i: Trace(i, graph) for i in graph.keys()}
 
         for terminal in terminals:
-            subgraph, args = OrderedDict(), []
-            schedule, index = list(terminal.rhs.args), 0
+            subgraph, args, index = OrderedDict(), [], 0
+            schedule = list(terminal.rhs.args)
             while schedule:
                 handle = schedule.pop(index)
                 args.append(handle)
@@ -267,7 +270,7 @@ class Rewriter(object):
                     subgraph = subgraph.values() + [Eq(terminal.lhs, Add(*args))]
                     subgraph = self._temporaries_graph(subgraph, len(subgraphs))
                     subgraphs.append(subgraph)
-                    subgraph, args = OrderedDict(), []
+                    subgraph, args, index = OrderedDict(), [], 0
                 else:
                     scores = [len(trace.intersect(trace_union(i.args, traces)))
                               for i in schedule]
@@ -335,11 +338,10 @@ class Rewriter(object):
                                               reads=reads, readby=handle.readby)
                 processing.pop(lhs, None)
 
-        # Return updated graph
-        time_invariants = [Eq(k, v) for k, v in time_invariants.items()]
-        graph = self._temporaries_graph(time_invariants + processing.values())
+        processed = [Eq(k, v) for k, v in time_invariants.items()] +\
+            processing.values()
 
-        return graph
+        return self._temporaries_graph(processed)
 
     def _optimize_graph(self, graphs):
         """
@@ -359,22 +361,16 @@ class Rewriter(object):
 
         # Contraction to scalars
         graphs, optimized_graphs = optimized_graphs, []
-        to_replace = {}
+        mapper = {}
         for graph in graphs:
-            optimized_graph = OrderedDict()
+            assert all(graph.values()[0].scope == v.scope for v in graph.values())
+            scope = graph.values()[0].scope
+            optimized_graph = []
             for k, v in graph.items():
-                if not v.is_time_invariant and not v.is_terminal and v.is_tensor:
-                    to_replace[k] = k.base.label
-                    node = Eq(k.base.label, v.rhs.xreplace(to_replace))
-                else:
-                    node = Eq(v.lhs, v.rhs)
-                optimized_graph[k.base.label] = node
-            # TODO:
-            # - create temporaries graph with proper scope
-            # - update is_time_invariant flag
-            optimized_graphs.append(optimized_graph)
+                mapper[k] = k.base.label if v.is_scalarizable else k
+                optimized_graph.append(Eq(k, v.rhs).xreplace(mapper))
+            optimized_graphs.append(self._temporaries_graph(optimized_graph, scope))
 
-        from IPython import embed; embed()
         return optimized_graphs
 
     def _create_time_invariants(self, expr, start=0):
@@ -436,17 +432,17 @@ class Rewriter(object):
         mapper = OrderedDict()
         return run(expr, expr, mapper)[0], mapper
 
-    def _cse(self):
+    def _cse(self, exprs):
         """
         Perform common subexpression elimination.
         """
-        expr = self.expr if isinstance(self.expr, list) else [self.expr]
+        exprs = exprs if isinstance(exprs, list) else [exprs]
 
-        temps, stencils = cse(expr, numbered_symbols("temp"))
+        temps, stencils = cse(exprs, numbered_symbols("temp"))
 
         # Restores the LHS
-        for i in range(len(expr)):
-            stencils[i] = Eq(expr[i].lhs, stencils[i].rhs)
+        for i in range(len(exprs)):
+            stencils[i] = Eq(exprs[i].lhs, stencils[i].rhs)
 
         to_revert = {}
         to_keep = []
@@ -476,12 +472,12 @@ class Rewriter(object):
                         else:
                             new_indices.append(index)
                     if arg.base.label in to_revert:
-                        s_dict[arg] = Indexed(to_revert[value.base.label], *new_indices)
+                        s_dict[arg] = Indexed(to_revert[value.base.label],
+                                              *new_indices)
             to_revert[temp] = value.xreplace(s_dict)
 
-        subs_dict = {}
-
         # Builds a dictionary of the replacements
+        subs_dict = {}
         for expr in stencils + [assign for temp, assign in to_keep]:
             for arg in preorder_traversal(expr):
                 if isinstance(arg, Indexed):
@@ -499,14 +495,11 @@ class Rewriter(object):
                     subs_dict[arg] = to_revert[arg]
 
         stencils = [stencil.xreplace(subs_dict) for stencil in stencils]
-
         to_keep = [Eq(temp[0], temp[1].xreplace(subs_dict)) for temp in to_keep]
 
         # If the RHS of a temporary variable is the LHS of a stencil,
         # update the value of the temporary variable after the stencil
-
         new_stencils = []
-
         for stencil in stencils:
             new_stencils.append(stencil)
 
@@ -515,7 +508,20 @@ class Rewriter(object):
                     new_stencils.append(temp)
                     break
 
-        return to_keep + new_stencils
+        # Reshuffle to make sure temporaries come later than their read values
+        processed = OrderedDict([(i.lhs, i) for i in to_keep + new_stencils])
+        temporaries = set(processed.keys())
+        ordered = OrderedDict()
+        while processed:
+            k, v = processed.popitem(last=False)
+            temporary_reads = terminals(v.rhs) & temporaries
+            if all(i in ordered for i in temporary_reads):
+                ordered[k] = v
+            else:
+                # Must wait for some earlier temporaries, push back into queue
+                processed[k] = v
+
+        return ordered.values()
 
 
 # Creation
@@ -596,7 +602,7 @@ def terminals(expr):
     symbols = list(expr.find(Symbol))
     symbols = [i for i in symbols if i not in junk]
 
-    return indexed + symbols
+    return set(indexed + symbols)
 
 
 def trace_union(iterable, mapper):
@@ -607,7 +613,7 @@ def trace_union(iterable, mapper):
     if in_trace:
         handle = mapper[in_trace.pop(0)]
     else:
-        handle = set()
+        handle = Trace(None, mapper)
     while in_trace:
         handle = handle.union(mapper[in_trace.pop(0)])
     return handle
