@@ -23,6 +23,7 @@ from devito.logger import info
 from devito.profiler import Profiler
 from devito.symbolics import dse_dtype
 from devito.tools import flatten
+import devito.tiler as tiler
 
 
 class Propagator(object):
@@ -530,6 +531,7 @@ class Propagator(object):
             time_stepping = self.get_time_stepping()
         else:
             time_stepping = []
+
         if len(loop_body) > 0:
             loop_body = [cgen.Block(omp_for + loop_body)]
         # Statements to be inserted into the time loop before the spatial loop
@@ -568,12 +570,16 @@ class Propagator(object):
 
         loop_body = cgen.Block(initial_block + loop_body + end_block)
 
-        loop_body = cgen.For(
-            cgen.InlineInitializer(cgen.Value("int", t_var), str(t_loop_limits[0])),
-            t_var + cond_op + str(t_loop_limits[1]),
-            t_var + "+=" + str(self._time_step),
-            loop_body
-        )
+        if self._timed_tiling:
+            ####################### Tiling ######################
+            tiler.generate_tiled_loop(self, loop_body, t_var, t_loop_limits, cond_op, self._time_step, self._tile_size)
+        else:
+            loop_body = cgen.For(
+                cgen.InlineInitializer(cgen.Value("int", t_var), str(t_loop_limits[0])),
+                t_var + cond_op + str(t_loop_limits[1]),
+                t_var + "+=" + str(self._time_step),
+                loop_body
+            )
 
         # Code to declare the time stepping variables (outside the time loop)
         def_time_step = [cgen.Value("int", t_var_def.name)
