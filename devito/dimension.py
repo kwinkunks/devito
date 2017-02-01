@@ -3,7 +3,7 @@ import cgen
 import numpy as np
 from sympy import Symbol
 
-__all__ = ['Dimension', 'x', 'y', 'z', 't', 'p', 'r']
+__all__ = ['Dimension', 'x', 'y', 'z', 't', 'p', 'd']
 
 
 class Dimension(Symbol):
@@ -58,4 +58,4 @@ y = Dimension('y')
 z = Dimension('z')
 t = Dimension('t')
 p = Dimension('p')
-r = Dimension('r')
+d = Dimension('d')
