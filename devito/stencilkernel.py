@@ -12,7 +12,7 @@ import numpy as np
 
 from devito.compiler import (get_compiler_from_env, get_tmp_dir,
                              jit_compile_and_load)
-from devito.dimension import Dimension
+from devito.dimension import BufferedDimension, Dimension
 from devito.dle import transform
 from devito.dse import indexify, rewrite
 from devito.interfaces import SymbolicData
@@ -151,7 +151,7 @@ class StencilKernel(Function):
             for i, dim in enumerate(f.indices):
                 # Infer open loop limits
                 if dim.size is None:
-                    if dim.buffered:
+                    if isinstance(dim, BufferedDimension):
                         # Check if provided as a keyword arg
                         size = kwargs.get(dim.name, None)
                         if size is None:
@@ -166,7 +166,9 @@ class StencilKernel(Function):
                         # Derive size from grid data shape and store
                         dim_sizes[dim] = data.shape[i]
                 else:
-                    assert dim.size == data.shape[i]
+                    if not isinstance(dim, BufferedDimension):
+                        assert dim.size == data.shape[i]
+
         # Add user-provided block sizes, if any
         dle_arguments = OrderedDict()
         for i in self._dle_state.arguments:
@@ -180,6 +182,7 @@ class StencilKernel(Function):
             else:
                 dle_arguments[i.argument] = dim_size
         dim_sizes.update(dle_arguments)
+
         # Insert loop size arguments from dimension values
         d_args = [d for d in arguments.values() if isinstance(d, Dimension)]
         for d in d_args:
