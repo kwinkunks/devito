@@ -62,12 +62,12 @@ class Acoustic_cg(object):
             self.at = AutoTuner(fw)
             self.at.auto_tune_blocks(self.s_order + 1, self.s_order * 4 + 2)
 
-    def Forward(self, save=False, cache_blocking=None,
+    def Forward(self, src, rec, save=False, cache_blocking=None,
                 auto_tuning=False, dse='advanced', compiler=None, u_ini=None):
 
         if auto_tuning:
             cache_blocking = self.at.block_size
-        fw = ForwardOperator(self.model, self.src, self.damp, self.data,
+        fw = ForwardOperator(self.model, src, rec, self.damp, self.data,
                              time_order=self.t_order, spc_order=self.s_order,
                              save=save, cache_blocking=cache_blocking, dse=dse,
                              compiler=compiler, profile=True, u_ini=u_ini)
@@ -80,8 +80,8 @@ class Acoustic_cg(object):
             return (rec.data, u, fw.propagator.gflopss,
                     fw.propagator.oi, fw.propagator.timings)
 
-    def Adjoint(self, rec, cache_blocking=None):
-        adj = AdjointOperator(self.model, self.damp, self.data, self.src, rec,
+    def Adjoint(self, srca, rec, cache_blocking=None):
+        adj = AdjointOperator(self.model, self.damp, self.data, srca, rec,
                               time_order=self.t_order, spc_order=self.s_order,
                               cache_blocking=cache_blocking)
         v = adj.apply()[0]

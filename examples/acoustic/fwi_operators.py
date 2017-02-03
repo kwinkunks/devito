@@ -7,7 +7,7 @@ from devito.stencilkernel import StencilKernel
 from examples.source_type import SourceLike
 
 
-def ForwardOperator(model, source, damp, data, time_order=2, spc_order=6,
+def ForwardOperator(model, src, rec, damp, data, time_order=2, spc_order=6,
                     save=False, u_ini=None, legacy=True, **kwargs):
     """
     Constructor method for the forward modelling operator in an acoustic media
@@ -22,8 +22,7 @@ def ForwardOperator(model, source, damp, data, time_order=2, spc_order=6,
     :param: u_ini : wavefield at the three first time step for non-zero initial condition
      required for the time marching scheme
     """
-    nt, nrec = data.shape
-    nt, nsrc = source.shape
+    nt = data.shape[0]
     s, h = symbols('s h')
     u = TimeData(name="u", shape=model.get_shape_comp(), time_dim=nt,
                  time_order=2, space_order=spc_order, save=save,
@@ -58,21 +57,8 @@ def ForwardOperator(model, source, damp, data, time_order=2, spc_order=6,
     # Define dimensions and fix loop sizes
     time.size = nt
     d.size = len(damp.shape)
-    p_src = Dimension('p_src', size=nsrc)
-    p_rec = Dimension('p_rec', size=nrec)
     for dim, s in zip(damp.indices, damp.shape):
         dim.size = s
-
-    # Receiver initialization
-    rec = SourceLike(name="rec", dimensions=[time, p_rec], npoint=nrec, nt=nt,
-                     dt=dt, h=model.get_spacing(),
-                     coordinates=data.receiver_coords, ndim=len(damp.shape),
-                     dtype=damp.dtype, nbpml=model.nbpml)
-    src = SourceLike(name="src", dimensions=[time, p_src], npoint=nsrc, nt=nt,
-                     dt=dt, h=model.get_spacing(),
-                     coordinates=source.receiver_coords, ndim=len(damp.shape),
-                     dtype=damp.dtype, nbpml=model.nbpml)
-    src.data[:] = source.traces[:]
 
     if legacy:
         op = Operator(nt, m.shape, stencils=Eq(u.forward, stencil), subs=subs,
@@ -110,7 +96,7 @@ class AdjointOperator(Operator):
     :param: time_order: Time discretization order
     :param: spc_order: Space discretization order
     """
-    def __init__(self, model, damp, data, src, recin,
+    def __init__(self, model, damp, data, srca, rec,
                  time_order=2, spc_order=6, **kwargs):
         nt, nrec = data.shape
         s, h = symbols('s h')
@@ -142,15 +128,6 @@ class AdjointOperator(Operator):
 
         # Add substitutions for spacing (temporal and spatial)
         subs = {s: dt, h: model.get_spacing()}
-        # Source and receiver initialization
-        srca = SourceLike(name="srca", npoint=src.traces.shape[1],
-                          nt=nt, dt=dt, h=model.get_spacing(),
-                          coordinates=src.receiver_coords,
-                          ndim=len(damp.shape), dtype=damp.dtype, nbpml=model.nbpml)
-        rec = SourceLike(name="rec", npoint=nrec, nt=nt, dt=dt, h=model.get_spacing(),
-                         coordinates=data.receiver_coords, ndim=len(damp.shape),
-                         dtype=damp.dtype, nbpml=model.nbpml)
-        rec.data[:] = recin[:]
 
         super(AdjointOperator, self).__init__(nt, m.shape,
                                               stencils=Eq(v.backward, stencil),

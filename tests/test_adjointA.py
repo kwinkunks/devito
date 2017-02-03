@@ -15,6 +15,7 @@ from examples.source_type import SourceLike
 @pytest.mark.parametrize('dimensions', [(60, 70), (60, 70, 80)])
 def test_acoustic(dimensions, time_order, space_order):
     nbpml = 10
+    nrec = 101
 
     if len(dimensions) == 2:
         # Dimensions in 2D are (x, z)
@@ -31,9 +32,9 @@ def test_acoustic(dimensions, time_order, space_order):
         location[0, 1] = origin[1] + 2 * spacing[1]
 
         # Receiver coordiantes
-        receiver_coords = np.zeros((101, 2))
+        receiver_coords = np.zeros((nrec, 2))
         receiver_coords[:, 0] = np.linspace(0, origin[0] +
-                                            dimensions[0] * spacing[0], num=101)
+                                            dimensions[0] * spacing[0], num=nrec)
         receiver_coords[:, 1] = location[0, 1]
 
     elif len(dimensions) == 3:
@@ -52,9 +53,9 @@ def test_acoustic(dimensions, time_order, space_order):
         location[0, 2] = origin[1] + 2 * spacing[2]
 
         # Receiver coordiantes
-        receiver_coords = np.zeros((101, 3))
+        receiver_coords = np.zeros((nrec, 3))
         receiver_coords[:, 0] = np.linspace(0, origin[0] +
-                                            dimensions[0] * spacing[0], num=101)
+                                            dimensions[0] * spacing[0], num=nrec)
         receiver_coords[:, 1] = origin[1] + dimensions[1] * spacing[1] * 0.5
         receiver_coords[:, 2] = location[0, 2]
 
@@ -85,22 +86,34 @@ def test_acoustic(dimensions, time_order, space_order):
     time_series = np.zeros((nt, 1))
     time_series[:, 0] = source(np.linspace(t0, tn, nt), f0)
 
-    src.set_receiver_pos(location)
-    src.set_shape(nt, 1)
-    src.set_traces(time_series)
+    p_src = Dimension('p_src', size=1)
+    src = SourceLike(name="src", dimensions=[time, p_src], npoint=1,
+                     nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                     coordinates=location, ndim=len(dimensions))
+    src.data[:] = time_series
 
+    # Create forward receivers
     data.set_receiver_pos(receiver_coords)
     data.set_shape(nt, 101)
+    p_rec = Dimension('p_rec', size=nrec)
+    rec = SourceLike(name="rec", dimensions=[time, p_rec], npoint=nrec,
+                     nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                     coordinates=receiver_coords, ndim=len(dimensions))
 
-    # Adjoint test
+    # Create adjoint source
+    srca = SourceLike(name="srca", dimensions=[time, p_src], npoint=1,
+                      nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                      coordinates=location, ndim=len(dimensions))
+
+    # Forward and adjointruns
     acoustic = Acoustic_cg(model, data, src, t_order=time_order,
-                            s_order=space_order, nbpml=nbpml)
-    rec, _, _, _, _ = acoustic.Forward(save=False)
-    srca = acoustic.Adjoint(rec)
+                           s_order=space_order, nbpml=nbpml)
+    acoustic.Forward(src, rec, save=False)
+    acoustic.Adjoint(srca, rec)
 
     # Actual adjoint test
-    term1 = np.dot(srca.reshape(-1), acoustic.src.traces)
-    term2 = linalg.norm(rec)**2
+    term1 = np.dot(srca.data.reshape(-1), time_series)
+    term2 = linalg.norm(rec.data)**2
     print(term1, term2, term1 - term2, term1 / term2)
     assert np.isclose(term1 / term2, 1.0, atol=0.001)
 
