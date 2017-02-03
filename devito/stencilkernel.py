@@ -19,6 +19,7 @@ from devito.interfaces import SymbolicData
 from devito.logger import error, info
 from devito.nodes import Block, Expression, Function, Iteration, TimedList
 from devito.profiler import Profiler
+from devito.tools import filter_ordered
 from devito.visitors import (EstimateCost, FindSections, FindSymbols,
                              IsPerfectIteration, MergeOuterIterations,
                              ResolveIterationVariable, SubstituteExpression,
@@ -80,7 +81,10 @@ class StencilKernel(Function):
         for i, expr in enumerate(nodes):
             newexpr = expr
             offsets = newexpr.index_offsets
-            for d in reversed(list(offsets.keys())):
+            # Filter out aliasing due to buffered dimensions
+            key = lambda d: d.parent if d.is_Buffered else d
+            dimensions = filter_ordered(list(offsets.keys()), key=key)
+            for d in reversed(dimensions):
                 newexpr = Iteration(newexpr, dimension=d,
                                     limits=d.size, offsets=offsets[d])
             nodes[i] = newexpr
