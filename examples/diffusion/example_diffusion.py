@@ -128,7 +128,7 @@ def execute_devito(ui, spacing=0.01, a=0.5, timesteps=500):
 
     # Execute the generated Devito stencil operator
     tstart = time.time()
-    op.apply(u, t=timesteps)
+    op.apply(u, t=timesteps, autotune=True)
     runtime = time.time() - tstart
     log("Devito: Diffusion with dx=%0.4f, dy=%0.4f, executed %d timesteps in %f seconds"
         % (spacing, spacing, timesteps, runtime))
