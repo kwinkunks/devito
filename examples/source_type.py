@@ -80,11 +80,11 @@ class SourceLike(PointData):
                       for x, idx in zip(self.sym_coordinates,
                                         self.sym_coord_indices)])
 
-    def point2grid(self, u, m, t=t):
+    def point2grid(self, u, m, tidx=t):
         """Generates an expression for generic point-to-grid interpolation"""
         dt = self.dt
         subs = dict(zip(self.rs, self.sym_coord_bases))
-        indices = [t] + self.indices[1:]
+        indices = [tidx] + self.indices[1:]
         index_matrix = [tuple([idx + ii + self.nbpml for ii, idx
                                in zip(inc, self.sym_coord_indices)])
                         for inc in self.increments]

@@ -76,7 +76,7 @@ def ForwardOperator(model, src, rec, damp, data, time_order=2, spc_order=6,
 
     else:
         eqn = Eq(u.forward, stencil)
-        src_add = src.point2grid(u, m, t)
+        src_add = src.point2grid(u, m, time)
         rec_read = Eq(rec, rec.grid2point(u))
         op = StencilKernel(stencils=[eqn] + src_add + [rec_read],
                            subs=subs, dse=None, dle=None)
