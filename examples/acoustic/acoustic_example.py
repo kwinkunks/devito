@@ -1,8 +1,10 @@
 import numpy as np
 
 from devito.logger import info
+from devito.dimension import Dimension, time
 from examples.acoustic.Acoustic_codegen import Acoustic_cg
 from examples.containers import IGrid, IShot
+from examples.source_type import SourceLike
 
 
 # Velocity models
@@ -57,25 +59,34 @@ def run(dimensions=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
 
     # Source geometry
     time_series = np.zeros((nt, 1))
-
     time_series[:, 0] = source(np.linspace(t0, tn, nt), f0)
 
     location = np.zeros((1, 3))
     location[0, 0] = origin[0] + dimensions[0] * spacing[0] * 0.5
     location[0, 1] = origin[1] + dimensions[1] * spacing[1] * 0.5
     location[0, 2] = origin[1] + 2 * spacing[2]
-    src.set_receiver_pos(location)
-    src.set_shape(nt, 1)
-    src.set_traces(time_series)
+
+    p_src = Dimension('p_src', size=1)
+    src = SourceLike(name="src", dimensions=[time, p_src], npoint=1,
+                     nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                     coordinates=location, ndim=len(dimensions))
+    src.data[:] = time_series
 
     # Receiver geometry
-    receiver_coords = np.zeros((101, 3))
+    nrec = 101
+    receiver_coords = np.zeros((nrec, 3))
     receiver_coords[:, 0] = np.linspace(0, origin[0] +
-                                        dimensions[0] * spacing[0], num=101)
+                                        dimensions[0] * spacing[0], num=nrec)
     receiver_coords[:, 1] = origin[1] + dimensions[1] * spacing[1] * 0.5
     receiver_coords[:, 2] = location[0, 1]
+
+    # Create forward receivers
     data.set_receiver_pos(receiver_coords)
-    data.set_shape(nt, 101)
+    data.set_shape(nt, nrec)
+    p_rec = Dimension('p_rec', size=nrec)
+    rec = SourceLike(name="rec", dimensions=[time, p_rec], npoint=nrec,
+                     nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                     coordinates=receiver_coords, ndim=len(dimensions))
 
     Acoustic = Acoustic_cg(model, data, src, nbpml=nbpml, t_order=time_order,
                            s_order=space_order, auto_tuning=auto_tuning, dse=dse,
@@ -83,8 +94,8 @@ def run(dimensions=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
 
     info("Applying Forward")
     rec, u, gflopss, oi, timings = Acoustic.Forward(
-        cache_blocking=cache_blocking, save=full_run, dse=dse,
-        auto_tuning=auto_tuning, compiler=compiler
+        src, rec, cache_blocking=cache_blocking, save=full_run,
+        dse=dse, auto_tuning=auto_tuning, compiler=compiler, legacy=False
     )
 
     if not full_run:
