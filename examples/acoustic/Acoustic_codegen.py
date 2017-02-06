@@ -56,7 +56,16 @@ class Acoustic_cg(object):
         damp_boundary(self.damp.data, nbpml)
 
         if auto_tuning:  # auto tuning with dummy forward operator
-            fw = ForwardOperator(self.model, self.src, self.damp, self.data,
+            # Create forward receivers
+            nt = self.data.shape[0]
+            nrec = self.data.shape[1]
+            dt = model.get_critical_dt()
+            p_rec = Dimension('p_rec', size=nrec)
+            rec = SourceLike(name="rec", dimensions=[time, p_rec], npoint=nrec,
+                     nt=nt, dt=dt, h=model.get_spacing(), nbpml=nbpml,
+                     coordinates=self.data.receiver_coords, ndim=len(model.dimensions))
+
+            fw = ForwardOperator(self.model, self.src, rec, self.damp, self.data,
                                  time_order=self.t_order, spc_order=self.s_order,
                                  profile=True, save=False, dse=dse, compiler=compiler)
             self.at = AutoTuner(fw)
