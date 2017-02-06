@@ -2,7 +2,7 @@
 
 # Launch as:
 #
-#    problem=[acoustic,tti] order=int grid=int mode=[blocked bs=int,original,maxperf,dse,dle] vtune=[...] advisor=[...] cprofile=[...] ./path/to/devito/examples/launcher.sh
+#    problem=[acoustic,tti] order=int grid=int mode=[blocked bs=int,original,maxperf,dse,dle] legacy=[True,False] vtune=[...] advisor=[...] cprofile=[...] ./path/to/devito/examples/launcher.sh
 #
 
 if [ -z ${DEVITO_HOME+x} ]; then
@@ -16,6 +16,10 @@ fi
 
 if [ -z ${order+x} ]; then
     order=2
+fi
+
+if [ -n "$legacy" ]; then
+    legacy="--legacy"
 fi
 
 time_orders="2"
@@ -68,14 +72,14 @@ if [[ "$mode" == "maxperf" || "$mode" == "dse" || "$mode" == "dle" ]]; then
 fi
 
 if [ "$mode" == "bench" ]; then
-    $PYTHON $DEVITO_HOME/examples/benchmark.py bench -bm $benchtype -P $problem -a -o -d $grid $grid $grid -so $space_orders -to $time_orders -r $DEVITO_RESULTS
-    $PYTHON $DEVITO_HOME/examples/benchmark.py plot -bm $benchtype -P $problem -a -o -d $grid $grid $grid -so $space_orders -to $time_orders -r $DEVITO_RESULTS -p $DEVITO_PLOTS --max_bw 31 --max_flops 537 --point_runtime --arch $arch
+    $PYTHON $DEVITO_HOME/examples/benchmark.py bench -bm $benchtype $legacy -P $problem -a -o -d $grid $grid $grid -so $space_orders -to $time_orders -r $DEVITO_RESULTS
+    $PYTHON $DEVITO_HOME/examples/benchmark.py plot -bm $benchtype $legacy -P $problem -a -o -d $grid $grid $grid -so $space_orders -to $time_orders -r $DEVITO_RESULTS -p $DEVITO_PLOTS --max_bw 31 --max_flops 537 --point_runtime --arch $arch
 elif [ "$mode" == "auto" ]; then
-    $PYTHON $DEVITO_HOME/examples/benchmark.py run -P $problem -a -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
+    $PYTHON $DEVITO_HOME/examples/benchmark.py run -P $problem $legacy -a -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
 elif [ "$mode" == "blocked" ]; then
-    $PREFIX $PYTHON $SUFFIX $DEVITO_HOME/examples/benchmark.py run -P $problem -cb $bs $bs -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
+    $PREFIX $PYTHON $SUFFIX $DEVITO_HOME/examples/benchmark.py run -P $problem $legacy -cb $bs $bs -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
 else
-    $PREFIX $PYTHON $SUFFIX $DEVITO_HOME/examples/benchmark.py run -P $problem -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
+    $PREFIX $PYTHON $SUFFIX $DEVITO_HOME/examples/benchmark.py run -P $problem $legacy -o -d $grid $grid $grid -r $DEVITO_RESULTS -so $order -to 2
 fi
 
 if [ -n "$cprofile" ]; then
