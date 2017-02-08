@@ -24,7 +24,7 @@ fi
 
 time_orders="2"
 if [ "$problem" == "acoustic" ]; then
-    space_orders="2 4 6 8 10 12 14 16"
+    space_orders="14"
 elif [ "$problem" == "tti" ]; then
     space_orders="4 8"
 else

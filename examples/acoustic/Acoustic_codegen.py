@@ -84,8 +84,8 @@ class Acoustic_cg(object):
                              compiler=compiler, profile=True, u_ini=u_ini, legacy=legacy)
 
         if isinstance(fw, StencilKernel):
-            fw.apply(autotune=auto_tuning)
-            return None, None, None, None, None
+            summary = fw.apply(autotune=True)
+            return None, None, summary.gflopss, summary.oi, summary.timings
         else:
             u, rec = fw.apply()
             return (rec.data, u, fw.propagator.gflopss,

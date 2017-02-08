@@ -100,7 +100,11 @@ def run(dimensions=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=1000.0,
     )
 
     if not full_run:
-        return gflopss, oi, timings, [rec, u.data]
+        try:
+            return gflopss, oi, timings, [rec, u.data]
+        except AttributeError:
+            info("Devito3.0: can't return data values")
+            return gflopss, oi, timings, [rec, u]
 
     info("Applying Adjoint")
     Acoustic.Adjoint(rec)
