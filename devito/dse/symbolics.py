@@ -117,7 +117,7 @@ class Rewriter(object):
     Track what options trigger a given pass.
     """
     triggers = {
-        '_extract_time_varying': ('future',),
+        '_extract_time_varying': ('advanced',),
         '_extract_time_invariants': ('advanced',),
         '_eliminate_intra_stencil_redundancies': ('basic', 'advanced'),
         '_eliminate_inter_stencil_redundancies': ('glicm', 'advanced'),
