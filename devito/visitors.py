@@ -401,14 +401,19 @@ class Transformer(Visitor):
         return o
 
     def visit_tuple(self, o, **kwargs):
-        return tuple(self.visit(i, **kwargs) for i in o)
+        visited = tuple(self.visit(i, **kwargs) for i in o)
+        return tuple(i for i in visited if i is not None)
 
     visit_list = visit_tuple
 
     def visit_Node(self, o, **kwargs):
         if o in self.mapper:
             handle = self.mapper[o]
-            return handle._rebuild(**handle.args)
+            if handle is None:
+                # None -> drop /o/
+                return None
+            else:
+                return handle._rebuild(**handle.args)
         else:
             rebuilt = [self.visit(i, **kwargs) for i in o.children]
             return o._rebuild(*rebuilt, **o.args_frozen)
@@ -430,7 +435,11 @@ class NestedTransformer(Transformer):
     def visit_Node(self, o, **kwargs):
         rebuilt = [self.visit(i, **kwargs) for i in o.children]
         handle = self.mapper.get(o, o)
-        return handle._rebuild(*rebuilt, **handle.args_frozen)
+        if handle is None:
+            # None -> drop /o/
+            return None
+        else:
+            return handle._rebuild(*rebuilt, **handle.args_frozen)
 
 
 class SubstituteExpression(Transformer):
