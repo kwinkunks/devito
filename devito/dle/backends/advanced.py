@@ -12,7 +12,7 @@ import cgen as c
 
 from devito.dimension import Dimension
 from devito.dle import (compose_nodes, copy_arrays, filter_iterations,
-                        fold_iteration_tree, unfold_iteration_tree,
+                        fold_blockable_tree, unfold_blocked_tree,
                         retrieve_iteration_tree)
 from devito.dle.backends import (BasicRewriter, BlockingArg, dle_pass, omplang,
                                  simdinfo, get_simd_flag, get_simd_items)
@@ -126,7 +126,7 @@ class DevitoRewriter(BasicRewriter):
         processed = []
         for node in state.nodes:
             # Make sure loop blocking will span as many Iterations as possible
-            fold = fold_iteration_tree(node)
+            fold = fold_blockable_tree(node)
 
             mapper = {}
             for tree in retrieve_iteration_tree(fold):
@@ -200,7 +200,7 @@ class DevitoRewriter(BasicRewriter):
             rebuilt = Transformer(mapper).visit(fold)
 
             # Finish unrolling any previously folded Iterations
-            processed.append(unfold_iteration_tree(rebuilt))
+            processed.append(unfold_blocked_tree(rebuilt))
 
         # All blocked dimensions
         if not blocked:
