@@ -79,6 +79,7 @@ class DimensionArgument(RuntimeArgument):
                     # Use the minimum size of all the symbolic data using this dimension
                     self.values['size'] = size = min(self._dep_sym_data_sizes())
         return size
-                
+
+#TODO: Add similar class for SymbolicData and maybe CompositeData
         
     
