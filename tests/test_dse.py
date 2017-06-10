@@ -126,6 +126,7 @@ def test_tti_rewrite_factorizer(tti_nodse):
 def test_tti_rewrite_advanced(tti_nodse):
     operator = tti_operator(dse='advanced')
     rec, u, v, _ = operator.forward()
+    from IPython import embed; embed()
 
     assert np.allclose(tti_nodse[0].data, v.data, atol=10e-1)
     assert np.allclose(tti_nodse[1].data, rec.data, atol=10e-1)
