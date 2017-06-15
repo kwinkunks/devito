@@ -28,6 +28,7 @@ from devito.visitors import (FindNodes, FindSections, FindSymbols, FindScopes,
                              IsPerfectIteration, ResolveIterationVariable,
                              SubstituteExpression, Transformer)
 from devito.exceptions import InvalidArgument, InvalidOperator
+from devito.arguments import RuntimeEngine
 
 __all__ = ['Operator']
 
@@ -107,7 +108,7 @@ class OperatorBasic(Function):
         dimensions += [d.parent for d in dimensions if d.is_Buffered]
         parameters += filter_ordered([d for d in dimensions if d.size is None],
                                      key=operator.attrgetter('name'))
-
+        
         # Resolve and substitute dimensions for loop index variables
         subs = {}
         nodes = ResolveIterationVariable().visit(nodes, subs=subs)
@@ -117,13 +118,15 @@ class OperatorBasic(Function):
         dle_state = transform(nodes, *set_dle_mode(dle))
         parameters += [i.argument for i in dle_state.arguments]
         self._includes.extend(list(dle_state.includes))
-
+        
         # Introduce all required C declarations
         nodes, elemental_functions = self._insert_declarations(dle_state, parameters)
         self.elemental_functions = elemental_functions
 
         # Track the DLE output, as it might be useful at execution time
         self._dle_state = dle_state
+
+        self.rte = RuntimeEngine(parameters)
 
         # Finish instantiation
         super(OperatorBasic, self).__init__(self.name, nodes, 'int', parameters, ())
@@ -134,7 +137,7 @@ class OperatorBasic(Function):
         """
         if len(args) == 0:
             args = self.parameters
-
+        self.rte.arguments(**kwargs)
         # Will perform auto-tuning if the user requested it and loop blocking was used
         maybe_autotune = kwargs.get('autotune', False)
 

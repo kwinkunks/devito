@@ -11,6 +11,7 @@ from devito.finite_difference import (centered, cross_derivative,
 from devito.logger import debug, error, warning
 from devito.memmap_manager import MemmapManager
 from devito.memory import CMemory, first_touch
+from devito.arguments import SymbolicDataArgProvider
 
 __all__ = ['DenseData', 'TimeData', 'Forward', 'Backward']
 
@@ -231,7 +232,7 @@ class TensorFunction(SymbolicFunction):
         return not self.onstack
 
 
-class SymbolicData(AbstractSymbol):
+class SymbolicData(AbstractSymbol, SymbolicDataArgProvider):
     """A symbolic object associated with data."""
 
     is_SymbolicData = True
