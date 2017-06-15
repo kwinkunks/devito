@@ -7,13 +7,14 @@ The main Visitor class is extracted from https://github.com/coneoproject/COFFEE.
 from __future__ import absolute_import
 
 import inspect
-from collections import OrderedDict, defaultdict
+from collections import Iterable, OrderedDict, defaultdict
 from operator import attrgetter
 
 import cgen as c
 from sympy import Symbol
 
 from devito.dimension import LoweredDimension
+from devito.exceptions import VisitorException
 from devito.nodes import Iteration, List, Node
 from devito.tools import as_tuple, filter_ordered, filter_sorted, flatten
 
@@ -440,6 +441,11 @@ class Transformer(Visitor):
     Given an Iteration/Expression tree T and a mapper from nodes in T to
     a set of new nodes L, M : N --> L, build a new Iteration/Expression tree T'
     where a node ``n`` in N is replaced with ``M[n]``.
+
+    In the special case in which ``M[n]`` is None, ``n`` is dropped from T'.
+
+    In the special case in which ``M[n]`` is an iterable of nodes, ``n`` is
+    "extended" by pre-pending to its body the nodes in ``M[n]``.
     """
 
     def __init__(self, mapper={}):
@@ -462,6 +468,11 @@ class Transformer(Visitor):
             if handle is None:
                 # None -> drop /o/
                 return None
+            elif isinstance(handle, Iterable):
+                if not o.children:
+                    raise VisitorException
+                extended = (tuple(handle) + o.children[0],) + o.children[1:]
+                return o._rebuild(*extended, **o.args_frozen)
             else:
                 return handle._rebuild(**handle.args)
         else:
@@ -488,6 +499,11 @@ class NestedTransformer(Transformer):
         if handle is None:
             # None -> drop /o/
             return None
+        elif isinstance(handle, Iterable):
+            if not o.children:
+                raise VisitorException
+            extended = [tuple(handle) + rebuilt[0]] + rebuilt[1:]
+            return o._rebuild(*extended, **o.args_frozen)
         else:
             return handle._rebuild(*rebuilt, **handle.args_frozen)
 
