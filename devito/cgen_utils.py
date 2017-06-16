@@ -20,13 +20,10 @@ class Allocator(object):
         """
         Generate a cgen statement that allocates ``obj`` on the stack.
         """
-        dtype = c.dtype_to_ctype(obj.dtype)
-        shape = "".join("[%s]" % i.symbolic_size for i in obj.indices)
+        shape = "".join("[%s]" % ccode(i) for i in obj.symbolic_shape)
         alignment = "__attribute__((aligned(64)))"
-
-        item = c.POD(dtype, "%s%s %s" % (obj.name, shape, alignment))
         handle = self.stack.setdefault(scope, OrderedDict())
-        handle[obj] = item
+        handle[obj] = c.POD(obj.dtype, "%s%s %s" % (obj.name, shape, alignment))
 
     def push_heap(self, obj):
         """
