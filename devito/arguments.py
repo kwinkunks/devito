@@ -7,11 +7,14 @@ import sys
 
 
 class RuntimeArgProv(object):
+    
     @property
-    def args(self):
+    def rtargs(self):
         raise NotImplemented()
 
+
 class RuntimeArgument(object):
+    
     def __init__(self, name, source, default_value = None):
         self.name = name
         self.source = source
@@ -36,8 +39,8 @@ class RuntimeArgument(object):
         raise NotImplemented()
         
 
-    
 class ScalarArgument(RuntimeArgument):
+    
     def __init__(self, name, source, default_value, reducer):
         super(ScalarArgument, self).__init__(name, source, default_value)
         self.reducer = reducer
@@ -48,7 +51,9 @@ class ScalarArgument(RuntimeArgument):
 
     def verify(self, value):
         # Assuming self._value was initialised as appropriate for the reducer
-        self._value = self.reducer(self._value, value)
+        if value is not None:
+            self._value = self.reducer(self._value, value)
+
         return self._value is not None
 
 
@@ -60,6 +65,10 @@ class TensorArgument(RuntimeArgument):
         self._value = self.source
 
     @property
+    def value(self):
+        return self._value.data
+
+    @property
     def decl(self):
         return c.Value(c.dtype_to_ctype(v.dtype), '*restrict %s_vec' % v.name)
 
@@ -68,18 +77,18 @@ class TensorArgument(RuntimeArgument):
             # Assuming self._value is initialized to self.source
             value = self._value
 
+        verify = self.source.shape == value.shape
         # Side-effect alert: We are modifying kwargs to read the value of children
         # Can we do without this? 
         if self.source.is_CompositeData:
             for child, orig_child in zip(value.children, self.source.children):
                     orig_child.rtargs[0].verify(child)
                     
-        verify = all([d.verify(v) for d, v in zip(self.source.indices, value.shape)])     
+        verify = verify and all([d.verify(v) for d, v in zip(self.source.indices, value.shape)])     
         if verify:    
             self._value = value
 
         return self._value is not None and verify
-
 
 
 class DimensionArgProvider(RuntimeArgProv):
@@ -87,7 +96,7 @@ class DimensionArgProvider(RuntimeArgProv):
 
     def __init__(self, *args, **kwargs):
         super(DimensionArgProvider, self).__init__(*args, **kwargs)
-        self._value = None
+        self._value = sys.maxint
 
     @property
     def value(self):
@@ -106,13 +115,19 @@ class DimensionArgProvider(RuntimeArgProv):
     # TODO: Do I need a verify on a dimension?
     def verify(self, value):
         verify = True
+
+        if value is None and self._value is not None:
+            return verify
+
+        if value is not None and value == self._value:
+            return verify
+        
         if self.size is not None:
         # Assuming the only people calling my verify are symbolic data, they need to be bigger than my size if I have a hard-coded size
             verify = (value > self.size)
         else:
-            # Assuming self._value was initialised as maxint 
+            # Assuming self._value was initialised as maxint
             value = self.reducer(self._value, value)
-
             if hasattr(self, 'parent'):
                 verify = verify and self.parent.verify(value)
                 
@@ -123,9 +138,11 @@ class DimensionArgProvider(RuntimeArgProv):
             # Derived dimensions could be linked through constraints
             # At this point, a constraint needs to be added that limits dim_e - dim_s < SOME_MAX
             # Also need a default constraint that dim_e > dim_s (or vice-versa)
-            verify = verify and all([a.verify(v) for a, v in zip(self.args, (0, value))])     
+            
+            verify = verify and all([a.verify(v) for a, v in zip(self.rtargs, (0, value))])
             if verify:
                 self._value = value
+            assert(verify)
         return verify               
 
     
@@ -164,68 +181,21 @@ class RuntimeEngine(object):
         self.dimensions = [x for x in parameters if isinstance(x, DimensionArgProvider)]
         assert(all(isinstance(x, RuntimeArgProv)
                        for x in self.symbolic_data + self.dimensions))
-        self.dimension_map = {}
-
-        for s in self.symbolic_data:
-            for d in s.indices:
-                self.dimension_map.get(d, []).append(s)
 
         self.tensor_arguments = flatten([x.rtargs for x in self.symbolic_data])
         self.scalar_arguments = flatten([x.rtargs for x in self.dimensions])
-
-    def _sym_data_sizes(self, dimension):
-        sym_datas = self.dimension_map.get(dimension, [])
-        return [x.shape[x.indices.index(dimension)] for x in sym_datas]
         
-    def verify_tensor_args(self, kwargs):
+    def arguments(self, *args, **kwargs):
         for ta in self.tensor_arguments:
-            ta.verify(kwargs.pop(ta.name, None))
+            assert(ta.verify(kwargs.pop(ta.name, None)))
 
         for d in self.dimensions:
-            d.verify(kwargs.pop(d.name, None))
+            assert(d.verify(kwargs.pop(d.name, None)))
 
         for s in self.scalar_arguments:
-            s.verify(kwargs.pop(s.name, None))
-        
-    def arguments(self, **kwargs):
-        #s_args = [s.runtime_arg() for x in self.symbolic_data]
-        #d_args = [d.runtime_arg() for x in self.dimensions]
-        self.verify_tensor_args(kwargs)
-        return None
-        values = OrderedDict()
-        extra_args = OrderedDict()
-        for s in self.symbolic_data:
-            # The value might be overriden either by a kwarg or by an arg
-            # provided by another symbol
-            overriden_value = kwargs.pop(s.name, None)
+            assert(s.verify(kwargs.pop(s.name, None)))
 
-            if overriden_value is None:
-                overriden_value = extra_args.pop(s.name, None)
-                
-            v, ea = s.process(overriden_value)
-            values[s.name] = v
-            
-            # Does this symbol affect any other symbols?
-            if len(ea) > 0:
-                for k, v in ea.items():
-                    if k in values.keys():
-                        # We already visited the symbol for which this argument is.
-                        # Just override
-                        values[k] = v
-                    else:
-                        # We are yet to visit this symbol. Store it to use when we
-                        # visit this symbol.
-                        extra_args[k] = v
-
-        # We should have used all the extra args by now
-        assert(len(extra_args) == 0)
-
-        overriden_value = None
-        for d in self.dimensions:
-            
-            overriden_value = kwargs.pop(d.name, None)
-            v_dict = d.process(overriden_value, self._sym_data_sizes(d))
-            values.update(v_dict)
+        return OrderedDict([(x.name, x.value) for x in self.tensor_arguments + self.scalar_arguments])
             
 
 _types = [ScalarArgument, TensorArgument]

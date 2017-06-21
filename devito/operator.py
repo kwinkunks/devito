@@ -137,7 +137,8 @@ class OperatorBasic(Function):
         """
         if len(args) == 0:
             args = self.parameters
-        self.rte.arguments(**kwargs)
+        args1 = self.rte.arguments(*args, **kwargs)
+        print(args1)
         # Will perform auto-tuning if the user requested it and loop blocking was used
         maybe_autotune = kwargs.get('autotune', False)
 
@@ -246,6 +247,7 @@ class OperatorBasic(Function):
         for name, arg in arguments.items():
             if isinstance(arg, SymbolicData) or isinstance(arg, Dimension):
                 raise ValueError('Runtime argument %s not defined' % arg)
+        #print(arguments)
         return arguments, dim_sizes
 
     @property
