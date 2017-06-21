@@ -1,26 +1,22 @@
 from logging import error
 from devito.exceptions import InvalidArgument
 from collections import OrderedDict
+from cached_property import cached_property
+from tools import flatten
+import sys
 
 
 class RuntimeArgProv(object):
-    def runtime_arg(self):
-        return runtime_argument(self, self.name, self.dtype)
-
-
-def runtime_argument(obj, name, dtype):
-    for typ in _types:
-        if isinstance(obj, typ._class):
-            return typ(name, dtype)
-    return None
-
+    @property
+    def args(self):
+        raise NotImplemented()
 
 class RuntimeArgument(object):
-    def __init__(self, name, dtype):
-        self._value = None
+    def __init__(self, name, source, default_value = None):
         self.name = name
-        self.dtype = dtype
-    
+        self.source = source
+        self._value = self._default_value = default_value
+        
     @property
     def value(self):
         return self._value
@@ -33,67 +29,114 @@ class RuntimeArgument(object):
     def decl(self):
         raise NotImplemented()
 
+    def reset(self):
+        self._value = self._default_value
+
+    def verify(self, kwargs):
+        raise NotImplemented()
+        
+
     
 class ScalarArgument(RuntimeArgument):
+    def __init__(self, name, source, default_value, reducer):
+        super(ScalarArgument, self).__init__(name, source, default_value)
+        self.reducer = reducer
+        
     @property
     def decl(self):
         return c.Value('const int', v.name)
 
+    def verify(self, value):
+        # Assuming self._value was initialised as appropriate for the reducer
+        self._value = self.reducer(self._value, value)
+        return self._value is not None
+
 
 class TensorArgument(RuntimeArgument):
+    
+    def __init__(self, name, source, dtype):
+        super(TensorArgument, self).__init__(name, source)
+        self.dtype = dtype
+        self._value = self.source
+
     @property
     def decl(self):
         return c.Value(c.dtype_to_ctype(v.dtype), '*restrict %s_vec' % v.name)
 
+    def verify(self, value):
+        if value is None:
+            # Assuming self._value is initialized to self.source
+            value = self._value
+
+        # Side-effect alert: We are modifying kwargs to read the value of children
+        # Can we do without this? 
+        if self.source.is_CompositeData:
+            for child, orig_child in zip(value.children, self.source.children):
+                    orig_child.rtargs[0].verify(child)
+                    
+        verify = all([d.verify(v) for d, v in zip(self.source.indices, value.shape)])     
+        if verify:    
+            self._value = value
+
+        return self._value is not None and verify
+
 
 
 class DimensionArgProvider(RuntimeArgProv):
-    def _dependencies(self):
-        deps = []
-        
-        if self.parent.size is not None:
-            return deps
-        # If we are a buffered dimension, we depend on the parent
-        if isinstance(self.parent, BufferedDimension):
-            deps.append(self.parent.parent)
-        # Since we don't know our size, we depend on any SymbolicData that uses us
-        for p in self.parameters:
-            if isinstance(p, SymbolicData) and self.parent in p._indices:
-                deps.append(p)
-        return deps
+    reducer = min
 
-    def _dep_sym_data_sizes(self):
-        """ Get the shape parameter corresponding to the current dimension 
-            for all dependent symbolic data
-        """
-        sd = [d for d in self.depends_on if isinstance(d, SymbolicData)]
-        sizes = []
-        for s in sd:
-            index = find_index(self.parent, s._indices)
-            sizes.append(s.shape[index])
-        return sizes
+    def __init__(self, *args, **kwargs):
+        super(DimensionArgProvider, self).__init__(*args, **kwargs)
+        self._value = None
+
+    @property
+    def value(self):
+        return self._value
     
-    def process(self, arg, sizes):
+    @cached_property
+    def rtargs(self):
+    # TODO: Create proper Argument objects - with good init values
         if self.size is not None:
-            # If we have size, can't override at runtime
-            assert(arg is None)
-            # Make sure all symbolic data using this dimension are larger than our size
-            assert(all([s > self.size for s in sizes]))
-            size = self.size
+            return []
         else:
-            size = arg
-            if size is None:
-                other_dim = [d for d in self.depends_on if isinstance(d, Dimension)][0]
-                if other_dim.arg_s.ready():
-                    # If the other dimension knows its size, copy it from there
-                    self.values['size'] = size = other_dim.arg_s.values['size']
-                else:
-                    # Use the minimum size of all the symbolic data using this dimension
-                    self.values['size'] = size = min(self._dep_sym_data_sizes())
-        return size
+            start = ScalarArgument("%s_s" % self.name, self, 0, max)
+            end = ScalarArgument("%s_e" % self.name, self, sys.maxint, min)
+            return [start, end]
+
+    # TODO: Do I need a verify on a dimension?
+    def verify(self, value):
+        verify = True
+        if self.size is not None:
+        # Assuming the only people calling my verify are symbolic data, they need to be bigger than my size if I have a hard-coded size
+            verify = (value > self.size)
+        else:
+            # Assuming self._value was initialised as maxint 
+            value = self.reducer(self._value, value)
+
+            if hasattr(self, 'parent'):
+                verify = verify and self.parent.verify(value)
+                
+                # If I don't know my value, ask my parent
+                if value is None:
+                    value = self.parent.value
+                
+            # Derived dimensions could be linked through constraints
+            # At this point, a constraint needs to be added that limits dim_e - dim_s < SOME_MAX
+            # Also need a default constraint that dim_e > dim_s (or vice-versa)
+            verify = verify and all([a.verify(v) for a, v in zip(self.args, (0, value))])     
+            if verify:
+                self._value = value
+        return verify               
 
     
 class SymbolicDataArgProvider(RuntimeArgProv):
+    
+    @cached_property
+    def rtargs(self):
+    # TODO: Create proper Argument objects - with good init values
+        return [TensorArgument(self.name, self, self.dtype)]
+
+    
     def process(self, arg):
         value = self
         extra_args = {}
@@ -127,15 +170,28 @@ class RuntimeEngine(object):
             for d in s.indices:
                 self.dimension_map.get(d, []).append(s)
 
+        self.tensor_arguments = flatten([x.rtargs for x in self.symbolic_data])
+        self.scalar_arguments = flatten([x.rtargs for x in self.dimensions])
+
     def _sym_data_sizes(self, dimension):
         sym_datas = self.dimension_map.get(dimension, [])
         return [x.shape[x.indices.index(dimension)] for x in sym_datas]
         
+    def verify_tensor_args(self, kwargs):
+        for ta in self.tensor_arguments:
+            ta.verify(kwargs.pop(ta.name, None))
 
+        for d in self.dimensions:
+            d.verify(kwargs.pop(d.name, None))
+
+        for s in self.scalar_arguments:
+            s.verify(kwargs.pop(s.name, None))
+        
     def arguments(self, **kwargs):
         #s_args = [s.runtime_arg() for x in self.symbolic_data]
         #d_args = [d.runtime_arg() for x in self.dimensions]
-
+        self.verify_tensor_args(kwargs)
+        return None
         values = OrderedDict()
         extra_args = OrderedDict()
         for s in self.symbolic_data:
