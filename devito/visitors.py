@@ -227,11 +227,15 @@ class FindSections(Visitor):
     """
 
     def visit_tuple(self, o, ret=None, queue=None):
+        if ret is None:
+            ret = self.default_retval()
         for i in o:
             ret = self.visit(i, ret=ret, queue=queue)
         return ret
 
     def visit_Node(self, o, ret=None, queue=None):
+        if ret is None:
+            ret = self.default_retval()
         for i in o.children:
             ret = self.visit(i, ret=ret, queue=queue)
         return ret
